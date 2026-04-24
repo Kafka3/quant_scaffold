@@ -1,34 +1,32 @@
-data:
-  path: data/raw/sample_ohlcv.csv
-
 strategy:
   stochastic:
     k_period: 14
     d_period: 3
     smooth: 1
-    overbought: 80
     oversold: 20
+    overbought: 80
+
   pivots:
     left_bars: 3
     right_bars: 3
     min_separation: 3
     max_separation: 20
-    price_tolerance: 0.002
+
   trend:
     ema_period: 55
-    use_ema_channel: true
-    use_slope_filter: false
-  entry:
-    use_break_of_pivot_2: true
+
   risk:
-    stop_type: structure
+    atr_period: 14
     stop_buffer: 0.0
     rr_target: 2.0
-    atr_period: 14
-    atr_mult: 2.0
+
+  setup:
+    setup_max_bars: 12
+    replace_same_side_setup: true
+    invalidate_on_stop_anchor_break: true
 
 backtest:
-  init_cash: 100000
-  fees: 0.0002
-  slippage: 0.0002
-  freq: 5min
+  initial_cash: 0.0
+  fee_per_trade: 0.0
+  slippage: 0.0
+  allow_short: true

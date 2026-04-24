@@ -11,7 +11,10 @@ from features.trend_filter import build_trend_filter
 @dataclass
 class PendingSetup:
     setup_bar_idx: object
+    setup_pos: int
     pivot2_idx: object
+    pivot2_pos: int
+    pivot2_time: object
     trigger_price: float
     stop_anchor: float
     bars_waited: int = 0
@@ -49,7 +52,6 @@ def build_signals(df: pd.DataFrame, config: dict) -> SignalBundle:
     setup_cfg = config.get("setup", {})
     setup_max_bars = setup_cfg.get("setup_max_bars", 12)
     replace_same_side_setup = setup_cfg.get("replace_same_side_setup", True)
-    invalidate_on_stop_anchor_break = setup_cfg.get("invalidate_on_stop_anchor_break", True)
 
     osc = stochastic_d(
         df,
@@ -88,85 +90,133 @@ def build_signals(df: pd.DataFrame, config: dict) -> SignalBundle:
     bearish_setup_stop_anchor = []
     bullish_setup_pivot2_pos = []
     bearish_setup_pivot2_pos = []
+    bullish_setup_pivot2_time = []
+    bearish_setup_pivot2_time = []
+    bullish_setup_expired = []
+    bearish_setup_expired = []
 
     for idx in df.index:
-        # First process any pending setup from earlier divergence bars.
-        # setup only becomes eligible to trigger from the next bar after pivot2.
+        current_pos = df.index.get_loc(idx)
+        expired_long = False
+        expired_short = False
+
+        # ------------------------------------------------------------------
+        # 1. 处理已存在的 pending setup（等待、触发或失效）
+        # ------------------------------------------------------------------
+        # 规则明确：
+        #   - 背离 bar 只创建 setup，同 bar 不触发。
+        #   - 触发必须从 pivot2 的下一根 bar 开始（current_pos > pivot2_pos）。
+        #   - setup 可能因结构破坏（stop_anchor 被击穿）或超时（bars_waited > max）而失效。
+        # ------------------------------------------------------------------
+
         if pending_long is not None:
-            if invalidate_on_stop_anchor_break and df.loc[idx, "Low"] < pending_long.stop_anchor:
-                # stop_anchor 被破坏则 setup 作废
+            # 从 setup 创建后的下一根 bar 开始计数
+            if current_pos > pending_long.setup_pos:
+                pending_long.bars_waited += 1
+
+            # 失效 1：结构破坏 — Low 跌破 stop_anchor
+            if df.loc[idx, "Low"] < pending_long.stop_anchor:
+                expired_long = True
                 pending_long = None
-            elif idx > pending_long.setup_bar_idx and df.loc[idx, "High"] > pending_long.trigger_price:
+            # 失效 2：超时
+            elif pending_long.bars_waited > setup_max_bars:
+                expired_long = True
+                pending_long = None
+            # 触发：从 pivot2 下一根 bar 开始，High 上穿 trigger_price，只触发一次
+            elif current_pos > pending_long.pivot2_pos and df.loc[idx, "High"] > pending_long.trigger_price:
                 entries_long.loc[idx] = True
                 long_entry_price.loc[idx] = pending_long.trigger_price
                 long_stop_price.loc[idx] = pending_long.stop_anchor - risk_cfg["stop_buffer"]
                 r = long_entry_price.loc[idx] - long_stop_price.loc[idx]
                 long_target_price.loc[idx] = long_entry_price.loc[idx] + risk_cfg["rr_target"] * r
-                long_setup_pivot2_time.loc[idx] = pending_long.pivot2_idx
+                long_setup_pivot2_time.loc[idx] = pending_long.pivot2_time
                 long_trigger_price_raw.loc[idx] = pending_long.trigger_price
                 pending_long = None
-            else:
-                if idx > pending_long.setup_bar_idx:
-                    pending_long.bars_waited += 1
-                # setup 最多等待多少根 bar
-                if pending_long.bars_waited > setup_max_bars:
-                    pending_long = None
+            # 否则继续持有 pending setup（等待中）
 
         if pending_short is not None:
-            if invalidate_on_stop_anchor_break and df.loc[idx, "High"] > pending_short.stop_anchor:
-                # stop_anchor 被破坏则 setup 作废
+            # 从 setup 创建后的下一根 bar 开始计数
+            if current_pos > pending_short.setup_pos:
+                pending_short.bars_waited += 1
+
+            # 失效 1：结构破坏 — High 涨破 stop_anchor
+            if df.loc[idx, "High"] > pending_short.stop_anchor:
+                expired_short = True
                 pending_short = None
-            elif idx > pending_short.setup_bar_idx and df.loc[idx, "Low"] < pending_short.trigger_price:
+            # 失效 2：超时
+            elif pending_short.bars_waited > setup_max_bars:
+                expired_short = True
+                pending_short = None
+            # 触发：从 pivot2 下一根 bar 开始，Low 跌破 trigger_price，只触发一次
+            elif current_pos > pending_short.pivot2_pos and df.loc[idx, "Low"] < pending_short.trigger_price:
                 entries_short.loc[idx] = True
                 short_entry_price.loc[idx] = pending_short.trigger_price
                 short_stop_price.loc[idx] = pending_short.stop_anchor + risk_cfg["stop_buffer"]
                 r = short_stop_price.loc[idx] - short_entry_price.loc[idx]
                 short_target_price.loc[idx] = short_entry_price.loc[idx] - risk_cfg["rr_target"] * r
-                short_setup_pivot2_time.loc[idx] = pending_short.pivot2_idx
+                short_setup_pivot2_time.loc[idx] = pending_short.pivot2_time
                 short_trigger_price_raw.loc[idx] = pending_short.trigger_price
                 pending_short = None
-            else:
-                if idx > pending_short.setup_bar_idx:
-                    pending_short.bars_waited += 1
-                # setup 最多等待多少根 bar
-                if pending_short.bars_waited > setup_max_bars:
-                    pending_short = None
+            # 否则继续持有 pending setup（等待中）
 
-        # Then register new setups on the current bar if divergence and trend are valid.
+        # ------------------------------------------------------------------
+        # 2. 在背离 bar 上创建新 setup
+        # ------------------------------------------------------------------
+        # 注意：setup 在背离 bar（即 pivot2 bar）上创建，但同 bar 不触发。
+        # 如果 replace_same_side_setup=True，新 setup 会覆盖旧 setup。
+        # ------------------------------------------------------------------
+
         if div.bullish.loc[idx] and trend["trend_long"].loc[idx]:
             trigger_price = div.bullish_trigger_price.loc[idx]
             stop_anchor = div.bullish_stop_anchor.loc[idx]
-            if not pd.isna(trigger_price) and not pd.isna(stop_anchor):
-                # bullish divergence only creates a setup; it does not trigger on the same bar.
+            pivot2_idx = div.bullish_pivot2_idx.loc[idx]
+            if not pd.isna(trigger_price) and not pd.isna(stop_anchor) and not pd.isna(pivot2_idx):
                 if replace_same_side_setup or pending_long is None:
+                    setup_pos = current_pos
+                    pivot2_pos = df.index.get_loc(pivot2_idx)
                     pending_long = PendingSetup(
                         setup_bar_idx=idx,
-                        pivot2_idx=idx,
+                        setup_pos=setup_pos,
+                        pivot2_idx=pivot2_idx,
+                        pivot2_pos=pivot2_pos,
+                        pivot2_time=pivot2_idx,
                         trigger_price=trigger_price,
                         stop_anchor=stop_anchor,
+                        bars_waited=0,
                     )
 
         if div.bearish.loc[idx] and trend["trend_short"].loc[idx]:
             trigger_price = div.bearish_trigger_price.loc[idx]
             stop_anchor = div.bearish_stop_anchor.loc[idx]
-            if not pd.isna(trigger_price) and not pd.isna(stop_anchor):
-                # bearish divergence only creates a setup; it does not trigger on the same bar.
+            pivot2_idx = div.bearish_pivot2_idx.loc[idx]
+            if not pd.isna(trigger_price) and not pd.isna(stop_anchor) and not pd.isna(pivot2_idx):
                 if replace_same_side_setup or pending_short is None:
+                    setup_pos = current_pos
+                    pivot2_pos = df.index.get_loc(pivot2_idx)
                     pending_short = PendingSetup(
                         setup_bar_idx=idx,
-                        pivot2_idx=idx,
+                        setup_pos=setup_pos,
+                        pivot2_idx=pivot2_idx,
+                        pivot2_pos=pivot2_pos,
+                        pivot2_time=pivot2_idx,
                         trigger_price=trigger_price,
                         stop_anchor=stop_anchor,
+                        bars_waited=0,
                     )
 
+        # 记录当前 bar 的 setup 状态到 features 列表
         bullish_setup_active.append(pending_long is not None)
         bearish_setup_active.append(pending_short is not None)
         bullish_setup_trigger.append(pending_long.trigger_price if pending_long is not None else pd.NA)
         bearish_setup_trigger.append(pending_short.trigger_price if pending_short is not None else pd.NA)
         bullish_setup_stop_anchor.append(pending_long.stop_anchor if pending_long is not None else pd.NA)
         bearish_setup_stop_anchor.append(pending_short.stop_anchor if pending_short is not None else pd.NA)
-        bullish_setup_pivot2_pos.append(pending_long.pivot2_idx if pending_long is not None else pd.NA)
-        bearish_setup_pivot2_pos.append(pending_short.pivot2_idx if pending_short is not None else pd.NA)
+        bullish_setup_pivot2_pos.append(pending_long.pivot2_pos if pending_long is not None else pd.NA)
+        bearish_setup_pivot2_pos.append(pending_short.pivot2_pos if pending_short is not None else pd.NA)
+        bullish_setup_pivot2_time.append(pending_long.pivot2_time if pending_long is not None else pd.NA)
+        bearish_setup_pivot2_time.append(pending_short.pivot2_time if pending_short is not None else pd.NA)
+        bullish_setup_expired.append(expired_long)
+        bearish_setup_expired.append(expired_short)
 
     # Backward-compatible alias fields for existing custom backtest code.
     entry_prices_long = long_entry_price
@@ -201,6 +251,10 @@ def build_signals(df: pd.DataFrame, config: dict) -> SignalBundle:
             "bearish_setup_stop_anchor": bearish_setup_stop_anchor,
             "bullish_setup_pivot2_pos": bullish_setup_pivot2_pos,
             "bearish_setup_pivot2_pos": bearish_setup_pivot2_pos,
+            "bullish_setup_pivot2_time": bullish_setup_pivot2_time,
+            "bearish_setup_pivot2_time": bearish_setup_pivot2_time,
+            "bullish_setup_expired": bullish_setup_expired,
+            "bearish_setup_expired": bearish_setup_expired,
             "long_entry_price": long_entry_price,
             "short_entry_price": short_entry_price,
             "long_stop_price": long_stop_price,

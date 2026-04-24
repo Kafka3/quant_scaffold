@@ -21,7 +21,7 @@ def main() -> None:
 
     df = load_ohlcv_csv(data_path)
     bundle = build_signals(df, settings["strategy"])
-    result = run_backtest(df, bundle, settings)
+    result = run_backtest(df, bundle, settings["backtest"])
 
     print("Backtest Summary:")
     for k, v in result.summary.items():
@@ -44,7 +44,7 @@ def main() -> None:
         print("\nRecent trades:")
         print(result.trades[available_columns].tail(20).to_string(index=False))
     else:
-        print("\nNo trades were generated.")
+        print("\nno trades generated")
 
 
 if __name__ == "__main__":
