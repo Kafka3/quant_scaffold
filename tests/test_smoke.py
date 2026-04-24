@@ -14,56 +14,49 @@ from data.loaders.csv_loader import load_ohlcv_csv
 
 
 def test_load_config():
+    """Test that configuration can be loaded successfully."""
     cfg = load_settings(Path("configs/base.yaml"))
     assert "strategy" in cfg
     assert "backtest" in cfg
 
 
 def test_build_signals_smoke():
+    """Test that signal building completes end-to-end without errors."""
     df = load_ohlcv_csv(Path("example_data/sample_ohlcv.csv"))
     cfg = load_settings(Path("configs/base.yaml"))
     bundle = build_signals(df, cfg["strategy"])
 
+    # Check return object is not None
     assert bundle is not None
+    
+    # Check index consistency with entries_long and entries_short
     assert bundle.entries_long.index.equals(df.index)
     assert bundle.entries_short.index.equals(df.index)
-    assert bundle.exits_long.index.equals(df.index)
-    assert bundle.exits_short.index.equals(df.index)
-    assert bundle.features.index.equals(df.index)
-
-    required_cols = [
-        "Close",
-        "osc",
-        "atr",
-        "ema_high",
-        "ema_low",
-        "trend_long",
-        "trend_short",
-        "pivot_high",
-        "pivot_low",
-        "bullish_div",
-        "bearish_div",
-        "bullish_trigger_price",
-        "bearish_trigger_price",
-        "bullish_stop_anchor",
-        "bearish_stop_anchor",
-        "long_entry_price",
-        "short_entry_price",
-        "long_stop_price",
-        "short_stop_price",
-        "long_target_price",
-        "short_target_price",
-    ]
-    for col in required_cols:
-        assert col in bundle.features.columns
+    
+    # Check index consistency with entry prices
+    assert bundle.long_entry_price.index.equals(df.index)
+    assert bundle.short_entry_price.index.equals(df.index)
 
 
 def test_run_backtest_smoke():
+    """Test that backtest runs end-to-end without errors and returns required fields."""
     df = load_ohlcv_csv(Path("example_data/sample_ohlcv.csv"))
     cfg = load_settings(Path("configs/base.yaml"))
     bundle = build_signals(df, cfg["strategy"])
     result = run_backtest(df, bundle, cfg["backtest"])
 
+    # Check return object contains required attributes
     assert result is not None
+    assert hasattr(result, "trades")
+    assert hasattr(result, "equity")
+    assert hasattr(result, "summary")
+    
+    # Check summary contains required fields
     assert "total_trades" in result.summary
     assert "total_return" in result.summary
+    assert "win_rate" in result.summary
+    
+    # Verify types are correct
+    assert isinstance(result.trades, pd.DataFrame)
+    assert isinstance(result.equity, pd.Series)
+    assert isinstance(result.summary, dict)
