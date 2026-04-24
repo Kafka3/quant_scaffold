@@ -3,15 +3,23 @@ import pandas as pd
 
 
 @dataclass
-class DivergenceSignals:
+class DivergenceResult:
     bullish: pd.Series
     bearish: pd.Series
     pivot_high: pd.Series
     pivot_low: pd.Series
-    pivot1_high: pd.Series  # First pivot high for bearish divergence
-    pivot2_high: pd.Series  # Second pivot high for bearish divergence
-    pivot1_low: pd.Series   # First pivot low for bullish divergence
-    pivot2_low: pd.Series   # Second pivot low for bullish divergence
+    bullish_pivot1_idx: pd.Series
+    bullish_pivot2_idx: pd.Series
+    bearish_pivot1_idx: pd.Series
+    bearish_pivot2_idx: pd.Series
+    bullish_pivot1_price: pd.Series
+    bullish_pivot2_price: pd.Series
+    bearish_pivot1_price: pd.Series
+    bearish_pivot2_price: pd.Series
+    bullish_trigger_price: pd.Series
+    bearish_trigger_price: pd.Series
+    bullish_stop_anchor: pd.Series
+    bearish_stop_anchor: pd.Series
 
 
 def _pivot_high(series: pd.Series, left: int, right: int) -> pd.Series:
@@ -30,55 +38,81 @@ def _pivot_low(series: pd.Series, left: int, right: int) -> pd.Series:
     return out
 
 
-def detect_regular_divergence(
-    price: pd.Series,
-    osc: pd.Series,
-    left_bars: int,
-    right_bars: int,
-    min_separation: int,
-    max_separation: int,
-    overbought: float = 80,
-    oversold: float = 20,
-) -> DivergenceSignals:
-    pivot_high = _pivot_high(price, left_bars, right_bars)
-    pivot_low = _pivot_low(price, left_bars, right_bars)
+def detect_regular_divergence(df: pd.DataFrame, osc: pd.Series, config: dict) -> DivergenceResult:
+    """
+    Detect regular bullish / bearish divergence using high/low pivots.
 
-    bullish = pd.Series(False, index=price.index)
-    bearish = pd.Series(False, index=price.index)
-    pivot1_high = pd.Series(index=price.index, dtype=object)
-    pivot2_high = pd.Series(index=price.index, dtype=object)
-    pivot1_low = pd.Series(index=price.index, dtype=object)
-    pivot2_low = pd.Series(index=price.index, dtype=object)
+    Note: 背离成立 bar != 实际入场 bar，入场要等后续突破触发。
+    """
+    high = df["High"]
+    low = df["Low"]
 
-    low_idx = list(price.index[pivot_low])
+    piv_cfg = config["pivots"]
+    stoch_cfg = config["stochastic"]
+
+    pivot_high = _pivot_high(high, piv_cfg["left_bars"], piv_cfg["right_bars"])
+    pivot_low = _pivot_low(low, piv_cfg["left_bars"], piv_cfg["right_bars"])
+
+    bullish = pd.Series(False, index=df.index)
+    bearish = pd.Series(False, index=df.index)
+    bullish_pivot1_idx = pd.Series(index=df.index, dtype=object)
+    bullish_pivot2_idx = pd.Series(index=df.index, dtype=object)
+    bearish_pivot1_idx = pd.Series(index=df.index, dtype=object)
+    bearish_pivot2_idx = pd.Series(index=df.index, dtype=object)
+    bullish_pivot1_price = pd.Series(index=df.index, dtype=float)
+    bullish_pivot2_price = pd.Series(index=df.index, dtype=float)
+    bearish_pivot1_price = pd.Series(index=df.index, dtype=float)
+    bearish_pivot2_price = pd.Series(index=df.index, dtype=float)
+    bullish_trigger_price = pd.Series(index=df.index, dtype=float)
+    bearish_trigger_price = pd.Series(index=df.index, dtype=float)
+    bullish_stop_anchor = pd.Series(index=df.index, dtype=float)
+    bearish_stop_anchor = pd.Series(index=df.index, dtype=float)
+
+    low_idx = list(df.index[pivot_low])
     for i in range(1, len(low_idx)):
         idx1, idx2 = low_idx[i - 1], low_idx[i]
-        pos1, pos2 = price.index.get_loc(idx1), price.index.get_loc(idx2)
+        pos1, pos2 = df.index.get_loc(idx1), df.index.get_loc(idx2)
         sep = pos2 - pos1
-        if min_separation <= sep <= max_separation:
-            if price.loc[idx2] < price.loc[idx1] and osc.loc[idx2] > osc.loc[idx1] and osc.loc[idx1] <= oversold:
+        if piv_cfg["min_separation"] <= sep <= piv_cfg["max_separation"]:
+            if low.loc[idx2] < low.loc[idx1] and osc.loc[idx2] > osc.loc[idx1] and osc.loc[idx1] <= stoch_cfg["oversold"]:
                 bullish.loc[idx2] = True
-                pivot1_low.loc[idx2] = {'price': price.loc[idx1], 'osc': osc.loc[idx1], 'pos': pos1}
-                pivot2_low.loc[idx2] = {'price': price.loc[idx2], 'osc': osc.loc[idx2], 'pos': pos2}
+                bullish_pivot1_idx.loc[idx2] = idx1
+                bullish_pivot2_idx.loc[idx2] = idx2
+                bullish_pivot1_price.loc[idx2] = low.loc[idx1]
+                bullish_pivot2_price.loc[idx2] = low.loc[idx2]
+                bullish_trigger_price.loc[idx2] = high.loc[idx2]
+                bullish_stop_anchor.loc[idx2] = low.loc[idx2]
 
-    high_idx = list(price.index[pivot_high])
+    high_idx = list(df.index[pivot_high])
     for i in range(1, len(high_idx)):
         idx1, idx2 = high_idx[i - 1], high_idx[i]
-        pos1, pos2 = price.index.get_loc(idx1), price.index.get_loc(idx2)
+        pos1, pos2 = df.index.get_loc(idx1), df.index.get_loc(idx2)
         sep = pos2 - pos1
-        if min_separation <= sep <= max_separation:
-            if price.loc[idx2] > price.loc[idx1] and osc.loc[idx2] < osc.loc[idx1] and osc.loc[idx1] >= overbought:
+        if piv_cfg["min_separation"] <= sep <= piv_cfg["max_separation"]:
+            if high.loc[idx2] > high.loc[idx1] and osc.loc[idx2] < osc.loc[idx1] and osc.loc[idx1] >= stoch_cfg["overbought"]:
                 bearish.loc[idx2] = True
-                pivot1_high.loc[idx2] = {'price': price.loc[idx1], 'osc': osc.loc[idx1], 'pos': pos1}
-                pivot2_high.loc[idx2] = {'price': price.loc[idx2], 'osc': osc.loc[idx2], 'pos': pos2}
+                bearish_pivot1_idx.loc[idx2] = idx1
+                bearish_pivot2_idx.loc[idx2] = idx2
+                bearish_pivot1_price.loc[idx2] = high.loc[idx1]
+                bearish_pivot2_price.loc[idx2] = high.loc[idx2]
+                bearish_trigger_price.loc[idx2] = low.loc[idx2]
+                bearish_stop_anchor.loc[idx2] = high.loc[idx2]
 
-    return DivergenceSignals(
+    return DivergenceResult(
         bullish=bullish,
         bearish=bearish,
         pivot_high=pivot_high,
         pivot_low=pivot_low,
-        pivot1_high=pivot1_high,
-        pivot2_high=pivot2_high,
-        pivot1_low=pivot1_low,
-        pivot2_low=pivot2_low,
+        bullish_pivot1_idx=bullish_pivot1_idx,
+        bullish_pivot2_idx=bullish_pivot2_idx,
+        bearish_pivot1_idx=bearish_pivot1_idx,
+        bearish_pivot2_idx=bearish_pivot2_idx,
+        bullish_pivot1_price=bullish_pivot1_price,
+        bullish_pivot2_price=bullish_pivot2_price,
+        bearish_pivot1_price=bearish_pivot1_price,
+        bearish_pivot2_price=bearish_pivot2_price,
+        bullish_trigger_price=bullish_trigger_price,
+        bearish_trigger_price=bearish_trigger_price,
+        bullish_stop_anchor=bullish_stop_anchor,
+        bearish_stop_anchor=bearish_stop_anchor,
     )

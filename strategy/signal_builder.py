@@ -1,4 +1,6 @@
 from dataclasses import dataclass
+from typing import Optional
+
 import pandas as pd
 
 from features.indicators import stochastic_d, atr
@@ -7,13 +9,26 @@ from features.trend_filter import build_trend_filter
 
 
 @dataclass
+class PendingSetup:
+    pivot2_idx: object
+    trigger_price: float
+    stop_anchor: float
+
+
+@dataclass
 class SignalBundle:
     entries_long: pd.Series
     exits_long: pd.Series
     entries_short: pd.Series
     exits_short: pd.Series
+    long_entry_price: pd.Series
+    short_entry_price: pd.Series
+    long_stop_price: pd.Series
+    short_stop_price: pd.Series
+    long_target_price: pd.Series
+    short_target_price: pd.Series
     features: pd.DataFrame
-    # For custom backtester
+    # backward-compatible aliases
     entry_prices_long: pd.Series
     entry_prices_short: pd.Series
     stop_prices_long: pd.Series
@@ -24,7 +39,6 @@ class SignalBundle:
 
 def build_signals(df: pd.DataFrame, config: dict) -> SignalBundle:
     stoch_cfg = config["stochastic"]
-    piv_cfg = config["pivots"]
     risk_cfg = config["risk"]
 
     osc = stochastic_d(
@@ -33,87 +47,114 @@ def build_signals(df: pd.DataFrame, config: dict) -> SignalBundle:
         d_period=stoch_cfg["d_period"],
         smooth=stoch_cfg["smooth"],
     )
-    div = detect_regular_divergence(
-        price=df["Close"],
-        osc=osc,
-        left_bars=piv_cfg["left_bars"],
-        right_bars=piv_cfg["right_bars"],
-        min_separation=piv_cfg["min_separation"],
-        max_separation=piv_cfg["max_separation"],
-        overbought=stoch_cfg["overbought"],
-        oversold=stoch_cfg["oversold"],
-    )
+    div = detect_regular_divergence(df, osc, config)
     trend = build_trend_filter(df, config["trend"])
+    current_atr = atr(df, risk_cfg["atr_period"])
 
-    # Entries: divergence + trend + break of pivot2
-    bullish_div = div.bullish & trend["trend_long"]
-    bearish_div = div.bearish & trend["trend_short"]
-
-    # Entry triggers: break of pivot2 high/low
     entries_long = pd.Series(False, index=df.index)
     entries_short = pd.Series(False, index=df.index)
-    entry_prices_long = pd.Series(index=df.index, dtype=float)
-    entry_prices_short = pd.Series(index=df.index, dtype=float)
+    exits_long = pd.Series(False, index=df.index)
+    exits_short = pd.Series(False, index=df.index)
+
+    long_entry_price = pd.Series(index=df.index, dtype=float)
+    short_entry_price = pd.Series(index=df.index, dtype=float)
+    long_stop_price = pd.Series(index=df.index, dtype=float)
+    short_stop_price = pd.Series(index=df.index, dtype=float)
+    long_target_price = pd.Series(index=df.index, dtype=float)
+    short_target_price = pd.Series(index=df.index, dtype=float)
+
+    pending_long: Optional[PendingSetup] = None
+    pending_short: Optional[PendingSetup] = None
 
     for idx in df.index:
-        if bullish_div.loc[idx]:
-            pivot2_price = div.pivot2_low.loc[idx]['price'] if div.pivot2_low.loc[idx] else None
-            if pivot2_price:
-                # Trigger on break of pivot2 low's high (simplified)
-                trigger_price = df.loc[idx, 'High']  # Use the bar's high as trigger
-                if df.loc[idx, 'Close'] > pivot2_price:
-                    entries_long.loc[idx] = True
-                    entry_prices_long.loc[idx] = trigger_price
+        # First process any pending setup from earlier divergence bars.
+        if pending_long is not None:
+            if df.loc[idx, "High"] > pending_long.trigger_price:
+                entries_long.loc[idx] = True
+                long_entry_price.loc[idx] = pending_long.trigger_price
+                long_stop_price.loc[idx] = pending_long.stop_anchor - risk_cfg["stop_buffer"]
+                r = long_entry_price.loc[idx] - long_stop_price.loc[idx]
+                long_target_price.loc[idx] = long_entry_price.loc[idx] + risk_cfg["rr_target"] * r
+                pending_long = None
 
-        if bearish_div.loc[idx]:
-            pivot2_price = div.pivot2_high.loc[idx]['price'] if div.pivot2_high.loc[idx] else None
-            if pivot2_price:
-                trigger_price = df.loc[idx, 'Low']  # Use the bar's low as trigger
-                if df.loc[idx, 'Close'] < pivot2_price:
-                    entries_short.loc[idx] = True
-                    entry_prices_short.loc[idx] = trigger_price
+        if pending_short is not None:
+            if df.loc[idx, "Low"] < pending_short.trigger_price:
+                entries_short.loc[idx] = True
+                short_entry_price.loc[idx] = pending_short.trigger_price
+                short_stop_price.loc[idx] = pending_short.stop_anchor + risk_cfg["stop_buffer"]
+                r = short_stop_price.loc[idx] - short_entry_price.loc[idx]
+                short_target_price.loc[idx] = short_entry_price.loc[idx] - risk_cfg["rr_target"] * r
+                pending_short = None
 
-    # Stops and targets
-    stop_prices_long = pd.Series(index=df.index, dtype=float)
-    stop_prices_short = pd.Series(index=df.index, dtype=float)
-    target_prices_long = pd.Series(index=df.index, dtype=float)
-    target_prices_short = pd.Series(index=df.index, dtype=float)
+        # Then register new setups on the current bar if divergence and trend are valid.
+        if div.bullish.loc[idx] and trend["trend_long"].loc[idx]:
+            trigger_price = div.bullish_trigger_price.loc[idx]
+            stop_anchor = div.bullish_stop_anchor.loc[idx]
+            if not pd.isna(trigger_price) and not pd.isna(stop_anchor):
+                # Newer bullish setup overrides any existing pending bullish setup.
+                pending_long = PendingSetup(
+                    pivot2_idx=idx,
+                    trigger_price=trigger_price,
+                    stop_anchor=stop_anchor,
+                )
 
-    for idx in df.index:
-        if entries_long.loc[idx]:
-            pivot2_price = div.pivot2_low.loc[idx]['price']
-            stop_prices_long.loc[idx] = pivot2_price - risk_cfg["stop_buffer"]
-            r = entry_prices_long.loc[idx] - stop_prices_long.loc[idx]
-            target_prices_long.loc[idx] = entry_prices_long.loc[idx] + risk_cfg["rr_target"] * r
+        if div.bearish.loc[idx] and trend["trend_short"].loc[idx]:
+            trigger_price = div.bearish_trigger_price.loc[idx]
+            stop_anchor = div.bearish_stop_anchor.loc[idx]
+            if not pd.isna(trigger_price) and not pd.isna(stop_anchor):
+                # Newer bearish setup overrides any existing pending bearish setup.
+                pending_short = PendingSetup(
+                    pivot2_idx=idx,
+                    trigger_price=trigger_price,
+                    stop_anchor=stop_anchor,
+                )
 
-        if entries_short.loc[idx]:
-            pivot2_price = div.pivot2_high.loc[idx]['price']
-            stop_prices_short.loc[idx] = pivot2_price + risk_cfg["stop_buffer"]
-            r = stop_prices_short.loc[idx] - entry_prices_short.loc[idx]
-            target_prices_short.loc[idx] = entry_prices_short.loc[idx] - risk_cfg["rr_target"] * r
+    # Backward-compatible alias fields for existing custom backtest code.
+    entry_prices_long = long_entry_price
+    entry_prices_short = short_entry_price
+    stop_prices_long = long_stop_price
+    stop_prices_short = short_stop_price
+    target_prices_long = long_target_price
+    target_prices_short = short_target_price
 
-    # Placeholder exits for vectorbt compatibility
-    exits_long = entries_short  # Simplified
-    exits_short = entries_long
-
-    features = pd.DataFrame({
-        "close": df["Close"],
-        "osc": osc,
-        "pivot_high": div.pivot_high.astype(int),
-        "pivot_low": div.pivot_low.astype(int),
-        "bullish_div": div.bullish.astype(int),
-        "bearish_div": div.bearish.astype(int),
-        "ema_high": trend["ema_high"],
-        "ema_low": trend["ema_low"],
-        "trend_long": trend["trend_long"].astype(int),
-        "trend_short": trend["trend_short"].astype(int),
-    }, index=df.index)
+    features = pd.DataFrame(
+        {
+            "Close": df["Close"],
+            "osc": osc,
+            "atr": current_atr,
+            "ema_high": trend["ema_high"],
+            "ema_low": trend["ema_low"],
+            "trend_long": trend["trend_long"].astype(int),
+            "trend_short": trend["trend_short"].astype(int),
+            "pivot_high": div.pivot_high.astype(int),
+            "pivot_low": div.pivot_low.astype(int),
+            "bullish_div": div.bullish.astype(int),
+            "bearish_div": div.bearish.astype(int),
+            "bullish_trigger_price": div.bullish_trigger_price,
+            "bearish_trigger_price": div.bearish_trigger_price,
+            "bullish_stop_anchor": div.bullish_stop_anchor,
+            "bearish_stop_anchor": div.bearish_stop_anchor,
+            "long_entry_price": long_entry_price,
+            "short_entry_price": short_entry_price,
+            "long_stop_price": long_stop_price,
+            "short_stop_price": short_stop_price,
+            "long_target_price": long_target_price,
+            "short_target_price": short_target_price,
+        },
+        index=df.index,
+    )
 
     return SignalBundle(
         entries_long=entries_long.fillna(False),
         exits_long=exits_long.fillna(False),
         entries_short=entries_short.fillna(False),
         exits_short=exits_short.fillna(False),
+        long_entry_price=long_entry_price,
+        short_entry_price=short_entry_price,
+        long_stop_price=long_stop_price,
+        short_stop_price=short_stop_price,
+        long_target_price=long_target_price,
+        short_target_price=short_target_price,
         features=features,
         entry_prices_long=entry_prices_long,
         entry_prices_short=entry_prices_short,
