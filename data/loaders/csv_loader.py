@@ -4,7 +4,7 @@ from typing import Union
 import pandas as pd
 
 REQUIRED_COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
-TIME_COLUMNS = ["datetime", "timestamp", "date", "time"]
+TIME_COLUMNS = ["datetime", "timestamp", "date", "time", "open_time", "close_time"]
 COLUMN_ALIASES = {
     "open": "Open",
     "high": "High",
@@ -28,7 +28,17 @@ def load_ohlcv_csv(path: Union[str, Path]) -> pd.DataFrame:
             break
 
     if time_col is not None:
-        df[time_col] = pd.to_datetime(df[time_col], errors="raise")
+        col = df[time_col]
+        if pd.api.types.is_numeric_dtype(col):
+            max_val = col.max()
+            if max_val > 1e12:
+                df[time_col] = pd.to_datetime(col, unit="ms", errors="raise")
+            elif max_val > 1e9:
+                df[time_col] = pd.to_datetime(col, unit="s", errors="raise")
+            else:
+                df[time_col] = pd.to_datetime(col, errors="raise")
+        else:
+            df[time_col] = pd.to_datetime(col, errors="raise")
         df = df.set_index(time_col)
     elif not isinstance(df.index, pd.DatetimeIndex):
         try:

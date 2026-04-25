@@ -1,3 +1,6 @@
+data:
+  path: example_data/sample_ohlcv.csv
+
 strategy:
   stochastic:
     k_period: 14
@@ -11,9 +14,13 @@ strategy:
     right_bars: 3
     min_separation: 3
     max_separation: 20
+    strict: true
 
   trend:
     ema_period: 55
+    lookback_bars: 12
+    min_close_ratio: 1.0
+    continuation_pullback_break: strict
 
   risk:
     atr_period: 14
@@ -26,7 +33,7 @@ strategy:
     invalidate_on_stop_anchor_break: true
 
 backtest:
-  initial_cash: 0.0
+  initial_cash: 100000
   fee_per_trade: 0.0
   slippage: 0.0
   allow_short: true

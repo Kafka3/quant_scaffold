@@ -24,9 +24,13 @@ def run_backtest(df: pd.DataFrame, bundle: SignalBundle, config: dict) -> Backte
       - Same-bar exit checked immediately after entry.
       - Stop takes priority over target on same-bar collisions.
       - Subsequent bars: stop > target priority maintained.
+      - End-of-data forced liquidation if still in position.
     """
-    init_cash = float(config.get("init_cash", 100000))
-    cash = init_cash
+    initial_cash = float(config.get("initial_cash", config.get("init_cash", 100000)))
+    fee_per_trade = float(config.get("fee_per_trade", 0.0))
+    slippage = float(config.get("slippage", 0.0))
+    allow_short = bool(config.get("allow_short", True))
+    cash = initial_cash
     position: str = "flat"
     current_trade: Optional[dict] = None
 
@@ -40,6 +44,7 @@ def run_backtest(df: pd.DataFrame, bundle: SignalBundle, config: dict) -> Backte
         "exit_time",
         "side",
         "setup_pivot2_time",
+        "setup_confirm_time",
         "entry_price",
         "trigger_price",
         "stop_price",
@@ -63,40 +68,44 @@ def run_backtest(df: pd.DataFrame, bundle: SignalBundle, config: dict) -> Backte
         # ------------------------------------------------------------------
         if position == "flat":
             long_entry = bool(bundle.entries_long.loc[idx])
-            short_entry = bool(bundle.entries_short.loc[idx])
+            short_entry = bool(bundle.entries_short.loc[idx]) and allow_short
 
             if long_entry and short_entry:
                 warnings.append(f"ambiguous long/short entry on {idx}, skip this bar")
             elif long_entry:
-                entry_price = bundle.long_entry_price.loc[idx]
+                entry_price_raw = bundle.long_entry_price.loc[idx]
                 stop_price = bundle.long_stop_price.loc[idx]
                 target_price = bundle.long_target_price.loc[idx]
-                if pd.notna(entry_price) and pd.notna(stop_price) and pd.notna(target_price):
+                if pd.notna(entry_price_raw) and pd.notna(stop_price) and pd.notna(target_price):
                     position = "long"
+                    entry_price = float(entry_price_raw) + slippage
                     current_trade = {
                         "entry_time": idx,
                         "side": "long",
-                        "entry_price": float(entry_price),
+                        "entry_price": entry_price,
                         "stop_price": float(stop_price),
                         "target_price": float(target_price),
                         "setup_pivot2_time": bundle.long_setup_pivot2_time.loc[idx],
+                        "setup_confirm_time": bundle.long_setup_confirm_time.loc[idx],
                         "trigger_price": bundle.long_trigger_price_raw.loc[idx],
                         "bars_held": 0,
                     }
                     bar_entered = True
             elif short_entry:
-                entry_price = bundle.short_entry_price.loc[idx]
+                entry_price_raw = bundle.short_entry_price.loc[idx]
                 stop_price = bundle.short_stop_price.loc[idx]
                 target_price = bundle.short_target_price.loc[idx]
-                if pd.notna(entry_price) and pd.notna(stop_price) and pd.notna(target_price):
+                if pd.notna(entry_price_raw) and pd.notna(stop_price) and pd.notna(target_price):
                     position = "short"
+                    entry_price = float(entry_price_raw) - slippage
                     current_trade = {
                         "entry_time": idx,
                         "side": "short",
-                        "entry_price": float(entry_price),
+                        "entry_price": entry_price,
                         "stop_price": float(stop_price),
                         "target_price": float(target_price),
                         "setup_pivot2_time": bundle.short_setup_pivot2_time.loc[idx],
+                        "setup_confirm_time": bundle.short_setup_confirm_time.loc[idx],
                         "trigger_price": bundle.short_trigger_price_raw.loc[idx],
                         "bars_held": 0,
                     }
@@ -107,9 +116,10 @@ def run_backtest(df: pd.DataFrame, bundle: SignalBundle, config: dict) -> Backte
         #    Priority: stop > target
         # ------------------------------------------------------------------
         if bar_entered and current_trade is not None:
-            exit_price, exit_reason = _check_exit(current_trade, high, low)
-            if exit_price is not None:
-                pnl = _finalize_trade(current_trade, idx, exit_price, exit_reason)
+            exit_price_raw, exit_reason = _check_exit(current_trade, high, low)
+            if exit_price_raw is not None:
+                exit_price = exit_price_raw - slippage if current_trade["side"] == "long" else exit_price_raw + slippage
+                pnl = _finalize_trade(current_trade, idx, exit_price, exit_reason, fee_per_trade)
                 cash += pnl
                 trades.append(current_trade)
                 current_trade = None
@@ -120,9 +130,10 @@ def run_backtest(df: pd.DataFrame, bundle: SignalBundle, config: dict) -> Backte
         #    Priority: stop > target
         # ------------------------------------------------------------------
         if not bar_entered and current_trade is not None:
-            exit_price, exit_reason = _check_exit(current_trade, high, low)
-            if exit_price is not None:
-                pnl = _finalize_trade(current_trade, idx, exit_price, exit_reason)
+            exit_price_raw, exit_reason = _check_exit(current_trade, high, low)
+            if exit_price_raw is not None:
+                exit_price = exit_price_raw - slippage if current_trade["side"] == "long" else exit_price_raw + slippage
+                pnl = _finalize_trade(current_trade, idx, exit_price, exit_reason, fee_per_trade)
                 cash += pnl
                 trades.append(current_trade)
                 current_trade = None
@@ -135,7 +146,7 @@ def run_backtest(df: pd.DataFrame, bundle: SignalBundle, config: dict) -> Backte
             current_trade["bars_held"] += 1
 
         # ------------------------------------------------------------------
-        # 5. Mark-to-market equity
+        # 5. Mark-to-market equity (using raw close, no slippage)
         # ------------------------------------------------------------------
         if position == "flat" or current_trade is None:
             equity_values.append(cash)
@@ -143,6 +154,25 @@ def run_backtest(df: pd.DataFrame, bundle: SignalBundle, config: dict) -> Backte
             equity_values.append(cash + (close - current_trade["entry_price"]))
         else:  # short
             equity_values.append(cash + (current_trade["entry_price"] - close))
+
+    # ------------------------------------------------------------------
+    # 6. End-of-data forced liquidation
+    # ------------------------------------------------------------------
+    if current_trade is not None:
+        last_close = float(df["Close"].iloc[-1])
+        last_idx = df.index[-1]
+        if current_trade["side"] == "long":
+            exit_price = last_close - slippage
+        else:
+            exit_price = last_close + slippage
+        pnl = _finalize_trade(current_trade, last_idx, exit_price, "end_of_data", fee_per_trade)
+        cash += pnl
+        trades.append(current_trade)
+        current_trade = None
+        position = "flat"
+        # Sync final equity point to realized cash after forced liquidation.
+        if equity_values:
+            equity_values[-1] = cash
 
     # ------------------------------------------------------------------
     # Assemble results
@@ -156,7 +186,7 @@ def run_backtest(df: pd.DataFrame, bundle: SignalBundle, config: dict) -> Backte
     else:
         trades_df = pd.DataFrame(columns=trade_columns)
 
-    summary = _build_summary(trades_df, equity, init_cash)
+    summary = _build_summary(trades_df, equity, initial_cash)
 
     return BacktestResult(
         trades=trades_df,
@@ -170,6 +200,7 @@ def _check_exit(trade: dict, high: float, low: float) -> Tuple[Optional[float], 
     """
     Determine whether the bar hits stop or target.
     Stop always takes priority when both are hit on the same bar.
+    Returns raw exit price (slippage applied by caller).
     """
     if trade["side"] == "long":
         if low <= trade["stop_price"]:
@@ -184,14 +215,17 @@ def _check_exit(trade: dict, high: float, low: float) -> Tuple[Optional[float], 
     return None, None
 
 
-def _finalize_trade(trade: dict, exit_time, exit_price: float, exit_reason: str) -> float:
+def _finalize_trade(trade: dict, exit_time, exit_price: float, exit_reason: str, fee_per_trade: float) -> float:
     """
     Populate exit fields on the trade dict and return the PnL.
+    PnL is net of slippage (already baked into entry/exit prices) and fees.
     """
     if trade["side"] == "long":
         pnl = exit_price - trade["entry_price"]
     else:
         pnl = trade["entry_price"] - exit_price
+
+    pnl -= 2 * fee_per_trade
 
     entry_price = trade["entry_price"]
     return_pct = pnl / entry_price if entry_price != 0 else 0.0
@@ -206,12 +240,12 @@ def _finalize_trade(trade: dict, exit_time, exit_price: float, exit_reason: str)
     return pnl
 
 
-def _build_summary(trades_df: pd.DataFrame, equity: pd.Series, init_cash: float) -> dict:
+def _build_summary(trades_df: pd.DataFrame, equity: pd.Series, initial_cash: float) -> dict:
     """
     Build summary statistics with robust handling for edge cases:
       - 0 trades
       - all winners / all losers
-      - zero init_cash (avoid division by zero)
+      - zero initial_cash (avoid division by zero)
     """
     total_trades = len(trades_df)
 
@@ -249,8 +283,8 @@ def _build_summary(trades_df: pd.DataFrame, equity: pd.Series, init_cash: float)
     expectancy = win_rate * avg_win + (1 - win_rate) * avg_loss
 
     # Total return
-    if init_cash > 0:
-        total_return = (equity.iloc[-1] / init_cash - 1) * 100
+    if initial_cash > 0:
+        total_return = (equity.iloc[-1] / initial_cash - 1) * 100
     else:
         total_return = 0.0
 
