@@ -6,12 +6,20 @@ Validates the stable parameter region from Phase 1 across time segments:
   2024-Q1, Q2, Q3, Q4, and Full Year.
 
 Usage:
-    python optimize/validate_candidates.py --data data/raw/BTCUSDT_5m_2024.csv
+    python optimize/validate_candidates.py --config configs/base.yaml --data data/raw/BTCUSDT_5m_2024.csv
 """
+
+import sys
+from pathlib import Path
+
+# Resolve project root from __file__ and inject into sys.path so imports work
+# regardless of the directory the script is executed from.
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 from argparse import ArgumentParser
 from itertools import product
-from pathlib import Path
 import copy
 import math
 
@@ -241,10 +249,14 @@ def run_validation(df: pd.DataFrame, settings: dict) -> tuple[pd.DataFrame, pd.D
 
 def main() -> None:
     parser = ArgumentParser(description="Phase 1.5 candidate validation by quarter")
-    parser.add_argument("--data", dest="data_path", default=None, help="Path to OHLCV CSV file")
+    parser.add_argument("--config", dest="config_path", default="configs/base.yaml",
+                        help="Path to config YAML file (default: configs/base.yaml)")
+    parser.add_argument("--data", dest="data_path", default=None,
+                        help="Path to OHLCV CSV file")
     args = parser.parse_args()
 
-    settings = load_settings(Path("configs/base.yaml"))
+    config_path = Path(args.config_path)
+    settings = load_settings(config_path)
     if args.data_path:
         data_path = args.data_path
     else:

@@ -1,6 +1,14 @@
+import sys
+from pathlib import Path
+
+# Resolve project root from __file__ and inject into sys.path so imports work
+# regardless of the directory the script is executed from.
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
 from argparse import ArgumentParser
 from itertools import product
-from pathlib import Path
 import copy
 import math
 
@@ -156,10 +164,14 @@ def _run_single_combo(args_tuple):
 
 def main() -> None:
     parser = ArgumentParser(description="BTC 5m continuation divergence Phase 1 grid search")
-    parser.add_argument("--data", dest="data_path", default=None, help="Path to OHLCV CSV file (overrides config)")
+    parser.add_argument("--config", dest="config_path", default="configs/base.yaml",
+                        help="Path to config YAML file (default: configs/base.yaml)")
+    parser.add_argument("--data", dest="data_path", default=None,
+                        help="Path to OHLCV CSV file (overrides config)")
     args = parser.parse_args()
 
-    settings = load_settings(Path("configs/base.yaml"))
+    config_path = Path(args.config_path)
+    settings = load_settings(config_path)
     if args.data_path:
         settings["data"]["path"] = args.data_path
 

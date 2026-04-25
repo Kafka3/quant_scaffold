@@ -1,5 +1,5 @@
 data:
-  path: example_data/sample_ohlcv.csv
+  path: data/raw/BTCUSDT_5m_2024.csv
 
 strategy:
   stochastic:
@@ -8,24 +8,20 @@ strategy:
     smooth: 1
     oversold: 20
     overbought: 80
-
   pivots:
-    left_bars: 3
+    left_bars: 4
     right_bars: 3
     min_separation: 3
     max_separation: 20
     strict: true
-
   trend:
     ema_period: 55
-    lookback_bars: 12
-    min_close_ratio: 1.0
-
+    lookback_bars: 24
+    min_close_ratio: 0.80
   risk:
     atr_period: 14
     stop_buffer: 0.0
     rr_target: 2.0
-
   setup:
     setup_max_bars: 12
     replace_same_side_setup: true

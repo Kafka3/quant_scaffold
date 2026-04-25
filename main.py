@@ -1,3 +1,4 @@
+import sys
 from argparse import ArgumentParser
 from pathlib import Path
 
@@ -95,17 +96,23 @@ def _print_signal_diagnostics(bundle) -> None:
 
 def main() -> None:
     parser = ArgumentParser(description="Run BTC 5m strategy validation")
-    parser.add_argument("--data", dest="data_path", default=None, help="Path to BTC 5m OHLCV CSV file")
+    parser.add_argument("--config", dest="config_path", default="configs/base.yaml",
+                        help="Path to config YAML file (default: configs/base.yaml)")
+    parser.add_argument("--data", dest="data_path", default=None,
+                        help="Path to BTC 5m OHLCV CSV file")
     args = parser.parse_args()
 
-    settings = load_settings(Path("configs/base.yaml"))
-    example_path = Path("example_data/sample_ohlcv.csv")
+    config_path = Path(args.config_path)
+    settings = load_settings(config_path)
     if args.data_path:
         data_path = Path(args.data_path)
     else:
-        data_path = example_path if example_path.exists() else Path(settings["data"]["path"])
+        data_path = Path(settings["data"]["path"])
 
     df = load_ohlcv_csv(data_path)
+    print(f"Config:     {config_path}")
+    print(f"Data path:  {data_path}")
+    print()
     _print_data_quality(df)
 
     bundle = build_signals(df, settings["strategy"])
