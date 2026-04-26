@@ -26,3 +26,9 @@ env/
 
 # Task files
 task_*.txt
+
+# Run logs
+reports/*.log
+
+# Large equity curve files
+reports/phase4_risk_sensitivity_equity.csv
