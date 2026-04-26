@@ -306,3 +306,529 @@ def _build_summary(trades_df: pd.DataFrame, equity: pd.Series, initial_cash: flo
         "avg_trade": avg_trade,
         "expectancy": expectancy,
     }
+
+
+# =====================================================================
+# Phase 4 — Position sizing and cost-aware backtester
+# =====================================================================
+
+from dataclasses import dataclass as _dc
+from typing import Dict, Any
+
+from backtest.risk_model import calculate_position_size
+from backtest.cost_model import apply_slippage, calculate_fees, calculate_slippage_cost
+from backtest.performance_metrics import calculate_sharpe_ratio
+
+
+@_dc
+class PositionSizingBacktestResult:
+    trades: pd.DataFrame
+    equity: pd.Series
+    summary: dict
+    skipped: pd.DataFrame
+    warnings: List[str]
+
+
+def run_backtest_with_position_sizing_and_costs(
+    df: pd.DataFrame,
+    bundle: SignalBundle,
+    strategy_config: dict,
+    risk_cost_config: dict,
+    risk_per_trade_pct: float,
+    position_mode: str = "capped",
+) -> PositionSizingBacktestResult:
+    """
+    Event-driven backtester with position sizing and cost model.
+
+    Preserves all entry/exit logic from run_backtest, but adds:
+      - Risk-based position sizing
+      - Slippage and fee model
+      - Full trade record with qty, notional, costs, R-multiple
+    """
+    account_cfg = risk_cost_config.get("account", {})
+    risk_cfg = risk_cost_config.get("risk", {})
+    cost_cfg = risk_cost_config.get("cost", {})
+    exec_cfg = risk_cost_config.get("execution", {})
+
+    initial_cash = float(account_cfg.get("initial_cash", 100000))
+    allow_short = bool(exec_cfg.get("allow_short", True))
+    same_bar_stop_first = bool(exec_cfg.get("same_bar_stop_first", True))
+
+    max_position_value_pct = float(risk_cfg.get("max_position_value_pct", 1.0))
+    max_leverage = float(risk_cfg.get("max_leverage", 1.0))
+    min_qty = float(risk_cfg.get("min_qty", 0.0001))
+    qty_step = float(risk_cfg.get("qty_step", 0.0001))
+
+    fee_rate = float(cost_cfg.get("fee_rate", 0.0))
+    fixed_fee_per_trade = float(cost_cfg.get("fixed_fee_per_trade", 0.0))
+    slippage = float(cost_cfg.get("slippage_per_side", 0.0))
+
+    metrics_cfg = risk_cost_config.get("metrics", {})
+    timeframe_minutes = int(metrics_cfg.get("timeframe_minutes", 5))
+    risk_free_rate_annual = float(metrics_cfg.get("risk_free_rate_annual", 0.0))
+
+    cash = initial_cash
+    position: str = "flat"
+    current_trade: Optional[Dict[str, Any]] = None
+
+    equity_values: List[float] = []
+    trades: List[dict] = []
+    skipped: List[dict] = []
+    warnings: List[str] = []
+
+    trade_columns = [
+        "entry_time", "exit_time", "side",
+        "entry_price_raw", "entry_price_filled",
+        "exit_price_raw", "exit_price_filled",
+        "qty", "notional",
+        "target_risk_amount", "actual_risk_amount",
+        "target_risk_pct", "actual_risk_pct",
+        "stop_distance", "raw_qty", "max_qty", "cap_hit",
+        "stop_price", "target_price",
+        "gross_pnl", "fees", "slippage_cost", "net_pnl", "r_multiple",
+        "equity_before", "equity_after",
+        "exit_reason", "bars_held", "skip_reason",
+    ]
+
+    skipped_columns = [
+        "time", "side", "entry_price", "stop_price",
+        "skip_reason", "equity", "risk_per_trade_pct", "position_mode",
+    ]
+
+    for idx in df.index:
+        high = float(df.loc[idx, "High"])
+        low = float(df.loc[idx, "Low"])
+        close = float(df.loc[idx, "Close"])
+
+        bar_entered = False
+
+        # ------------------------------------------------------------------
+        # 1. Entry logic: only when flat
+        # ------------------------------------------------------------------
+        if position == "flat":
+            long_entry = bool(bundle.entries_long.loc[idx])
+            short_entry = bool(bundle.entries_short.loc[idx]) and allow_short
+
+            if long_entry and short_entry:
+                warnings.append(f"ambiguous long/short entry on {idx}, skip this bar")
+            elif long_entry:
+                entry_price_raw = float(bundle.long_entry_price.loc[idx])
+                stop_price = float(bundle.long_stop_price.loc[idx])
+                target_price = float(bundle.long_target_price.loc[idx])
+
+                if pd.notna(entry_price_raw) and pd.notna(stop_price) and pd.notna(target_price):
+                    sizing = calculate_position_size(
+                        equity=cash,
+                        entry_price=entry_price_raw,
+                        stop_price=stop_price,
+                        risk_per_trade_pct=risk_per_trade_pct,
+                        max_position_value_pct=max_position_value_pct,
+                        max_leverage=max_leverage,
+                        min_qty=min_qty,
+                        qty_step=qty_step,
+                    )
+                    if sizing["skip_trade"]:
+                        skipped.append({
+                            "time": idx,
+                            "side": "long",
+                            "entry_price": entry_price_raw,
+                            "stop_price": stop_price,
+                            "skip_reason": sizing["skip_reason"],
+                            "equity": cash,
+                            "risk_per_trade_pct": risk_per_trade_pct,
+                            "position_mode": position_mode,
+                        })
+                    else:
+                        entry_filled = apply_slippage(entry_price_raw, "long", "entry", slippage)
+                        position = "long"
+                        current_trade = {
+                            "entry_time": idx,
+                            "side": "long",
+                            "entry_price_raw": entry_price_raw,
+                            "entry_price_filled": entry_filled,
+                            "stop_price": stop_price,
+                            "target_price": target_price,
+                            "qty": sizing["qty"],
+                            "notional": sizing["notional"],
+                            "target_risk_amount": sizing["target_risk_amount"],
+                            "actual_risk_amount": sizing["actual_risk_amount"],
+                            "target_risk_pct": sizing["target_risk_pct"],
+                            "actual_risk_pct": sizing["actual_risk_pct"],
+                            "stop_distance": sizing["stop_distance"],
+                            "raw_qty": sizing["raw_qty"],
+                            "max_qty": sizing["max_qty"],
+                            "cap_hit": sizing["cap_hit"],
+                            "equity_before": cash,
+                            "bars_held": 0,
+                        }
+                        bar_entered = True
+
+            elif short_entry:
+                entry_price_raw = float(bundle.short_entry_price.loc[idx])
+                stop_price = float(bundle.short_stop_price.loc[idx])
+                target_price = float(bundle.short_target_price.loc[idx])
+
+                if pd.notna(entry_price_raw) and pd.notna(stop_price) and pd.notna(target_price):
+                    sizing = calculate_position_size(
+                        equity=cash,
+                        entry_price=entry_price_raw,
+                        stop_price=stop_price,
+                        risk_per_trade_pct=risk_per_trade_pct,
+                        max_position_value_pct=max_position_value_pct,
+                        max_leverage=max_leverage,
+                        min_qty=min_qty,
+                        qty_step=qty_step,
+                    )
+                    if sizing["skip_trade"]:
+                        skipped.append({
+                            "time": idx,
+                            "side": "short",
+                            "entry_price": entry_price_raw,
+                            "stop_price": stop_price,
+                            "skip_reason": sizing["skip_reason"],
+                            "equity": cash,
+                            "risk_per_trade_pct": risk_per_trade_pct,
+                            "position_mode": position_mode,
+                        })
+                    else:
+                        entry_filled = apply_slippage(entry_price_raw, "short", "entry", slippage)
+                        position = "short"
+                        current_trade = {
+                            "entry_time": idx,
+                            "side": "short",
+                            "entry_price_raw": entry_price_raw,
+                            "entry_price_filled": entry_filled,
+                            "stop_price": stop_price,
+                            "target_price": target_price,
+                            "qty": sizing["qty"],
+                            "notional": sizing["notional"],
+                            "target_risk_amount": sizing["target_risk_amount"],
+                            "actual_risk_amount": sizing["actual_risk_amount"],
+                            "target_risk_pct": sizing["target_risk_pct"],
+                            "actual_risk_pct": sizing["actual_risk_pct"],
+                            "stop_distance": sizing["stop_distance"],
+                            "raw_qty": sizing["raw_qty"],
+                            "max_qty": sizing["max_qty"],
+                            "cap_hit": sizing["cap_hit"],
+                            "equity_before": cash,
+                            "bars_held": 0,
+                        }
+                        bar_entered = True
+
+        # ------------------------------------------------------------------
+        # 2. Same-bar exit check
+        # ------------------------------------------------------------------
+        if bar_entered and current_trade is not None:
+            exit_price_raw, exit_reason = _check_exit_ps(current_trade, high, low)
+            if exit_price_raw is not None:
+                _finalize_trade_ps(
+                    current_trade, idx, exit_price_raw, exit_reason,
+                    slippage, fee_rate, fixed_fee_per_trade,
+                )
+                cash = current_trade["equity_after"]
+                trades.append(current_trade)
+                current_trade = None
+                position = "flat"
+
+        # ------------------------------------------------------------------
+        # 3. Subsequent-bar exit check
+        # ------------------------------------------------------------------
+        if not bar_entered and current_trade is not None:
+            exit_price_raw, exit_reason = _check_exit_ps(current_trade, high, low)
+            if exit_price_raw is not None:
+                _finalize_trade_ps(
+                    current_trade, idx, exit_price_raw, exit_reason,
+                    slippage, fee_rate, fixed_fee_per_trade,
+                )
+                cash = current_trade["equity_after"]
+                trades.append(current_trade)
+                current_trade = None
+                position = "flat"
+
+        # ------------------------------------------------------------------
+        # 4. bars_held counting
+        # ------------------------------------------------------------------
+        if current_trade is not None and idx != current_trade["entry_time"]:
+            current_trade["bars_held"] += 1
+
+        # ------------------------------------------------------------------
+        # 5. Mark-to-market equity
+        # ------------------------------------------------------------------
+        if position == "flat" or current_trade is None:
+            equity_values.append(cash)
+        elif position == "long":
+            unrealized = (close - current_trade["entry_price_filled"]) * current_trade["qty"]
+            equity_values.append(cash + unrealized)
+        else:  # short
+            unrealized = (current_trade["entry_price_filled"] - close) * current_trade["qty"]
+            equity_values.append(cash + unrealized)
+
+    # ------------------------------------------------------------------
+    # 6. End-of-data forced liquidation
+    # ------------------------------------------------------------------
+    if current_trade is not None:
+        last_close = float(df["Close"].iloc[-1])
+        last_idx = df.index[-1]
+        _finalize_trade_ps(
+            current_trade, last_idx, last_close, "end_of_data",
+            slippage, fee_rate, fixed_fee_per_trade,
+        )
+        cash = current_trade["equity_after"]
+        trades.append(current_trade)
+        current_trade = None
+        position = "flat"
+        if equity_values:
+            equity_values[-1] = cash
+
+    # ------------------------------------------------------------------
+    # Assemble results
+    # ------------------------------------------------------------------
+    equity = pd.Series(equity_values, index=df.index)
+
+    if trades:
+        trades_df = pd.DataFrame(trades)
+        trades_df = trades_df[[c for c in trade_columns if c in trades_df.columns]]
+    else:
+        trades_df = pd.DataFrame(columns=trade_columns)
+
+    if skipped:
+        skipped_df = pd.DataFrame(skipped)
+        skipped_df = skipped_df[[c for c in skipped_columns if c in skipped_df.columns]]
+    else:
+        skipped_df = pd.DataFrame(columns=skipped_columns)
+
+    summary = _build_summary_ps(
+        trades_df, equity, initial_cash, skipped_df,
+        timeframe_minutes, risk_free_rate_annual,
+    )
+
+    return PositionSizingBacktestResult(
+        trades=trades_df,
+        equity=equity,
+        summary=summary,
+        skipped=skipped_df,
+        warnings=warnings,
+    )
+
+
+def _check_exit_ps(trade: dict, high: float, low: float) -> Tuple[Optional[float], Optional[str]]:
+    """Same exit logic as _check_exit."""
+    if trade["side"] == "long":
+        if low <= trade["stop_price"]:
+            return trade["stop_price"], "stop"
+        elif high >= trade["target_price"]:
+            return trade["target_price"], "target"
+    else:  # short
+        if high >= trade["stop_price"]:
+            return trade["stop_price"], "stop"
+        elif low <= trade["target_price"]:
+            return trade["target_price"], "target"
+    return None, None
+
+
+def _finalize_trade_ps(
+    trade: dict,
+    exit_time,
+    exit_price_raw: float,
+    exit_reason: str,
+    slippage: float,
+    fee_rate: float,
+    fixed_fee_per_trade: float,
+) -> None:
+    """Finalize a trade with position sizing and cost model."""
+    side = trade["side"]
+    qty = trade["qty"]
+    entry_raw = trade["entry_price_raw"]
+    entry_filled = trade["entry_price_filled"]
+
+    exit_filled = apply_slippage(exit_price_raw, side, "exit", slippage)
+
+    if side == "long":
+        gross_pnl = (exit_filled - entry_filled) * qty
+    else:
+        gross_pnl = (entry_filled - exit_filled) * qty
+
+    fees = calculate_fees(entry_filled, exit_filled, qty, fee_rate, fixed_fee_per_trade)
+    slippage_cost = calculate_slippage_cost(entry_raw, entry_filled, exit_price_raw, exit_filled, qty, side)
+    net_pnl = gross_pnl - fees
+
+    actual_risk_amount = trade.get("actual_risk_amount", 0.0)
+    if actual_risk_amount > 0:
+        r_multiple = net_pnl / actual_risk_amount
+    else:
+        r_multiple = float("nan")
+
+    equity_after = trade["equity_before"] + net_pnl
+
+    trade.update({
+        "exit_time": exit_time,
+        "exit_price_raw": exit_price_raw,
+        "exit_price_filled": exit_filled,
+        "gross_pnl": gross_pnl,
+        "fees": fees,
+        "slippage_cost": slippage_cost,
+        "net_pnl": net_pnl,
+        "r_multiple": r_multiple,
+        "equity_after": equity_after,
+        "exit_reason": exit_reason,
+    })
+
+
+def _build_summary_ps(
+    trades_df: pd.DataFrame,
+    equity: pd.Series,
+    initial_cash: float,
+    skipped_df: pd.DataFrame,
+    timeframe_minutes: int,
+    risk_free_rate_annual: float,
+) -> dict:
+    """Build summary for position-sizing backtest."""
+    total_trades = len(trades_df)
+
+    if total_trades == 0:
+        return {
+            "total_return": 0.0,
+            "total_trades": 0,
+            "win_rate": 0.0,
+            "profit_factor": 0.0,
+            "max_drawdown": 0.0,
+            "avg_trade": 0.0,
+            "expectancy": 0.0,
+            "sharpe_ratio": float("nan"),
+            "avg_r": 0.0,
+            "median_r": 0.0,
+            "total_r": 0.0,
+            "expectancy_r": 0.0,
+            "long_trades": 0,
+            "short_trades": 0,
+            "long_pnl": 0.0,
+            "short_pnl": 0.0,
+            "total_fees": 0.0,
+            "total_slippage_cost": 0.0,
+            "gross_profit": 0.0,
+            "gross_loss": 0.0,
+            "cost_as_pct_of_gross_profit": 0.0,
+            "avg_qty": 0.0,
+            "avg_notional": 0.0,
+            "max_notional": 0.0,
+            "avg_notional_pct": 0.0,
+            "max_notional_pct": 0.0,
+            "skipped_trades": len(skipped_df),
+            "cap_hit_count": 0,
+            "cap_hit_rate": 0.0,
+            "avg_actual_risk_pct": 0.0,
+            "max_actual_risk_pct": 0.0,
+            "avg_target_risk_pct": 0.0,
+            "max_target_risk_pct": 0.0,
+        }
+
+    wins = trades_df[trades_df["net_pnl"] > 0]
+    losses = trades_df[trades_df["net_pnl"] < 0]
+    win_count = len(wins)
+    loss_count = len(losses)
+
+    gross_profit = float(wins["net_pnl"].sum()) if win_count > 0 else 0.0
+    gross_loss = float(abs(losses["net_pnl"].sum())) if loss_count > 0 else 0.0
+
+    if gross_loss > 0:
+        profit_factor = gross_profit / gross_loss
+    elif gross_profit > 0:
+        profit_factor = float("inf")
+    else:
+        profit_factor = 0.0
+
+    win_rate = win_count / total_trades
+    avg_trade = float(trades_df["net_pnl"].mean())
+
+    avg_win = float(wins["net_pnl"].mean()) if win_count > 0 else 0.0
+    avg_loss = float(losses["net_pnl"].mean()) if loss_count > 0 else 0.0
+    expectancy = win_rate * avg_win + (1 - win_rate) * avg_loss
+
+    # R-multiple stats
+    r_values = trades_df["r_multiple"].dropna()
+    avg_r = float(r_values.mean()) if len(r_values) > 0 else 0.0
+    median_r = float(r_values.median()) if len(r_values) > 0 else 0.0
+    total_r = float(r_values.sum()) if len(r_values) > 0 else 0.0
+
+    r_wins = trades_df[trades_df["r_multiple"] > 0]["r_multiple"]
+    r_losses = trades_df[trades_df["r_multiple"] < 0]["r_multiple"]
+    r_win_rate = len(r_wins) / len(r_values) if len(r_values) > 0 else 0.0
+    avg_r_win = float(r_wins.mean()) if len(r_wins) > 0 else 0.0
+    avg_r_loss = float(r_losses.mean()) if len(r_losses) > 0 else 0.0
+    expectancy_r = r_win_rate * avg_r_win + (1 - r_win_rate) * avg_r_loss
+
+    # Total return
+    if initial_cash > 0:
+        total_return = (equity.iloc[-1] / initial_cash - 1) * 100
+    else:
+        total_return = 0.0
+
+    # Max drawdown
+    peak = equity.cummax()
+    safe_peak = peak.where(peak > 0, pd.NA)
+    drawdown = (equity - safe_peak) / safe_peak
+    if drawdown.isna().all():
+        max_drawdown = 0.0
+    else:
+        max_drawdown = float(drawdown.min() * 100)
+
+    # Sharpe ratio
+    sharpe = calculate_sharpe_ratio(equity, timeframe_minutes, risk_free_rate_annual)
+
+    # Side breakdown
+    long_trades = len(trades_df[trades_df["side"] == "long"])
+    short_trades = len(trades_df[trades_df["side"] == "short"])
+    long_pnl = float(trades_df[trades_df["side"] == "long"]["net_pnl"].sum())
+    short_pnl = float(trades_df[trades_df["side"] == "short"]["net_pnl"].sum())
+
+    # Costs
+    total_fees = float(trades_df["fees"].sum())
+    total_slippage_cost = float(trades_df["slippage_cost"].sum())
+    total_gross = gross_profit + gross_loss
+    cost_as_pct = (total_fees + total_slippage_cost) / gross_profit * 100 if gross_profit > 0 else 0.0
+
+    # Notional stats
+    avg_qty = float(trades_df["qty"].mean())
+    avg_notional = float(trades_df["notional"].mean())
+    max_notional = float(trades_df["notional"].max())
+    avg_notional_pct = (avg_notional / initial_cash * 100) if initial_cash > 0 else 0.0
+    max_notional_pct = (max_notional / initial_cash * 100) if initial_cash > 0 else 0.0
+
+    return {
+        "total_return": total_return,
+        "total_trades": total_trades,
+        "win_rate": win_rate,
+        "profit_factor": profit_factor,
+        "max_drawdown": max_drawdown,
+        "max_drawdown_pct": max_drawdown,
+        "avg_trade": avg_trade,
+        "expectancy": expectancy,
+        "winning_trades": win_count,
+        "losing_trades": loss_count,
+        "sharpe_ratio": sharpe,
+        "avg_r": avg_r,
+        "median_r": median_r,
+        "total_r": total_r,
+        "expectancy_r": expectancy_r,
+        "long_trades": long_trades,
+        "short_trades": short_trades,
+        "long_pnl": long_pnl,
+        "short_pnl": short_pnl,
+        "total_fees": total_fees,
+        "total_slippage_cost": total_slippage_cost,
+        "gross_profit": gross_profit,
+        "gross_loss": gross_loss,
+        "cost_as_pct_of_gross_profit": cost_as_pct,
+        "avg_qty": avg_qty,
+        "avg_notional": avg_notional,
+        "max_notional": max_notional,
+        "avg_notional_pct": avg_notional_pct,
+        "max_notional_pct": max_notional_pct,
+        "skipped_trades": len(skipped_df),
+        "cap_hit_count": int(trades_df["cap_hit"].sum()) if "cap_hit" in trades_df.columns else 0,
+        "cap_hit_rate": float(trades_df["cap_hit"].mean()) if "cap_hit" in trades_df.columns and len(trades_df) > 0 else 0.0,
+        "avg_actual_risk_pct": float(trades_df["actual_risk_pct"].mean()) if "actual_risk_pct" in trades_df.columns and len(trades_df) > 0 else 0.0,
+        "max_actual_risk_pct": float(trades_df["actual_risk_pct"].max()) if "actual_risk_pct" in trades_df.columns and len(trades_df) > 0 else 0.0,
+        "avg_target_risk_pct": float(trades_df["target_risk_pct"].mean()) if "target_risk_pct" in trades_df.columns and len(trades_df) > 0 else 0.0,
+        "max_target_risk_pct": float(trades_df["target_risk_pct"].max()) if "target_risk_pct" in trades_df.columns and len(trades_df) > 0 else 0.0,
+    }

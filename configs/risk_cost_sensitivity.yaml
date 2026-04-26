@@ -1,0 +1,50 @@
+account:
+  initial_cash: 100000
+  currency: USDT
+
+position_modes:
+  uncapped:
+    max_position_value_pct: 999
+    max_leverage: 999
+
+  capped_1x:
+    max_position_value_pct: 1.0
+    max_leverage: 1.0
+
+risk:
+  sizing_mode: risk_percent
+  risk_per_trade_pct_list:
+    - 0.005
+    - 0.01
+    - 0.02
+    - 0.05
+    - 0.10
+    - 0.20
+
+  min_qty: 0.0001
+  qty_step: 0.0001
+
+cost:
+  fee_mode: notional_rate
+  fee_rate: 0.0004
+  fixed_fee_per_trade: 0.0
+
+  slippage_mode: fixed_price
+  slippage_per_side: 5.0
+
+execution:
+  entry_fill_mode: trigger_price
+  exit_fill_mode: stop_or_target_price
+  same_bar_stop_first: true
+  allow_short: true
+
+risk_limits:
+  use_daily_loss_limit: false
+  use_max_drawdown_halt: false
+  use_consecutive_loss_limit: false
+  use_max_trades_per_day: false
+
+metrics:
+  timeframe_minutes: 5
+  risk_free_rate_annual: 0.0
+  annualization_mode: crypto_24_7
