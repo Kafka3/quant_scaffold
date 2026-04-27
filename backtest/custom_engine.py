@@ -16,8 +16,9 @@ def run_custom_backtest(df: pd.DataFrame, bundle, config: dict) -> BacktestResul
     Simple bar-by-bar backtester for dynamic stops/targets.
     Assumes only one position at a time, long or short.
     """
-    cash = config["backtest"]["initial_cash"]
-    qty = config.get("backtest", {}).get("qty", 1.0)
+    backtest_cfg = config.get("backtest", {})
+    cash = float(backtest_cfg.get("initial_cash", 100000))
+    qty = float(backtest_cfg.get("qty", 1.0))
     position = 0  # 1 for long, -1 for short, 0 for flat
     entry_price = 0.0
     stop_price = 0.0

@@ -8,8 +8,6 @@ import sys
 from pathlib import Path
 
 import pandas as pd
-
-from optimize.utils import slice_dataframe
 import numpy as np
 from joblib import Parallel, delayed
 
@@ -19,6 +17,7 @@ from joblib import Parallel, delayed
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from optimize.utils import safe_profit_factor, slice_dataframe, compute_extra_metrics
 from data.loaders.csv_loader import load_ohlcv_csv
 from strategy.signal_builder import build_signals
 from backtest.vectorbt_engine import run_backtest
@@ -117,20 +116,7 @@ def run_single(cfg, df_full, cost_mode, period_name, start, end):
     bundle = build_signals(df_slice, cfg)
     result = run_backtest(df_slice, bundle, bt_cfg)
     summary = result.summary
-    trades = result.trades
-
-    # Extract extra metrics from trades DataFrame
-    if not trades.empty:
-        long_trades = int((trades["side"] == "long").sum())
-        short_trades = int((trades["side"] == "short").sum())
-        target_exits = int((trades["exit_reason"] == "target").sum())
-        stop_exits = int((trades["exit_reason"] == "stop").sum())
-        eod_exits = int((trades["exit_reason"] == "end_of_data").sum())
-        avg_bars = float(trades["bars_held"].mean()) if "bars_held" in trades.columns else 0.0
-        median_bars = float(trades["bars_held"].median()) if "bars_held" in trades.columns else 0.0
-    else:
-        long_trades = short_trades = target_exits = stop_exits = eod_exits = 0
-        avg_bars = median_bars = 0.0
+    extras = compute_extra_metrics(result)
 
     return {
         "cost_mode": cost_mode,
@@ -146,17 +132,11 @@ def run_single(cfg, df_full, cost_mode, period_name, start, end):
         "total_return": summary.get("total_return", 0.0),
         "total_trades": summary.get("total_trades", 0),
         "win_rate": summary.get("win_rate", 0.0),
-        "profit_factor": summary.get("profit_factor", 0.0) if summary.get("profit_factor") is not None else 0.0,
+        "profit_factor": safe_profit_factor(summary.get("profit_factor")),
         "max_drawdown": summary.get("max_drawdown", 0.0),
         "avg_trade": summary.get("avg_trade", 0.0),
         "expectancy": summary.get("expectancy", 0.0),
-        "long_trades": long_trades,
-        "short_trades": short_trades,
-        "target_exits": target_exits,
-        "stop_exits": stop_exits,
-        "end_of_data_exits": eod_exits,
-        "avg_bars_held": avg_bars,
-        "median_bars_held": median_bars,
+        **extras,
     }
 
 
