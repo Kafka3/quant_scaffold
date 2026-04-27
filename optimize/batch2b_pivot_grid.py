@@ -281,11 +281,12 @@ def build_equivalence(summary_df):
     return pd.DataFrame(rows)
 
 
-def validate_tpe_vs_wide(val_df):
+def validate_tpe_vs_wide(val_df, reports_dir):
     """Explicit per-period comparison between candidate_tpe (9/42) and candidate_wide_simple (9/35).
 
-    Appends validation output to the log without changing equivalence.csv format.
+    Writes reports/batch2b_9_35_vs_9_42_equivalence.csv and prints summary to terminal.
     """
+    rows = []
     print("\n--- Per-Period Equivalence Validation: candidate_tpe (9/42) vs candidate_wide_simple (9/35) ---")
     for cost_mode in COST_MODES:
         sub = val_df[val_df["cost_mode"] == cost_mode]
@@ -318,7 +319,42 @@ def validate_tpe_vs_wide(val_df):
                 f"{diff_ret:>10.4f} | {row_w['total_trades']:>11} | {row_t['total_trades']:>11} | "
                 f"{row_w['profit_factor']:>8.2f} | {row_t['profit_factor']:>8.2f}"
             )
+
+            def eq(a, b):
+                return abs(float(a) - float(b)) < 1e-9
+
+            total_return_equal = eq(row_w["total_return"], row_t["total_return"])
+            total_trades_equal = eq(row_w["total_trades"], row_t["total_trades"])
+            profit_factor_equal = eq(row_w["profit_factor"], row_t["profit_factor"])
+            max_drawdown_equal = eq(row_w["max_drawdown"], row_t["max_drawdown"])
+            all_equal = total_return_equal and total_trades_equal and profit_factor_equal and max_drawdown_equal
+
+            rows.append({
+                "cost_mode": cost_mode,
+                "period": row_t["period"],
+                "total_return_9_35": row_w["total_return"],
+                "total_return_9_42": row_t["total_return"],
+                "total_return_equal": total_return_equal,
+                "total_trades_9_35": row_w["total_trades"],
+                "total_trades_9_42": row_t["total_trades"],
+                "total_trades_equal": total_trades_equal,
+                "profit_factor_9_35": row_w["profit_factor"],
+                "profit_factor_9_42": row_t["profit_factor"],
+                "profit_factor_equal": profit_factor_equal,
+                "max_drawdown_9_35": row_w["max_drawdown"],
+                "max_drawdown_9_42": row_t["max_drawdown"],
+                "max_drawdown_equal": max_drawdown_equal,
+                "all_equal": all_equal,
+            })
     print("--- End Validation ---\n")
+
+    csv_path = reports_dir / "batch2b_9_35_vs_9_42_equivalence.csv"
+    if rows:
+        equiv_df = pd.DataFrame(rows)
+        equiv_df.to_csv(csv_path, index=False)
+        print(f"Saved equivalence report: {csv_path}")
+    else:
+        print("No equivalence data to save.")
 
 
 # ------------------------------------------------------------------
@@ -408,12 +444,12 @@ def main():
     # Equivalence analysis
     equiv_df = build_equivalence(summary_df)
 
-    # Explicit validation: candidate_tpe (9/42) vs candidate_wide_simple (9/35)
-    validate_tpe_vs_wide(val_df)
-
     # Save reports
     reports_dir = PROJECT_ROOT / "reports"
     reports_dir.mkdir(exist_ok=True)
+
+    # Explicit validation: candidate_tpe (9/42) vs candidate_wide_simple (9/35)
+    validate_tpe_vs_wide(val_df, reports_dir)
 
     val_path = reports_dir / "batch2b_pivot_grid_validation.csv"
     summary_path = reports_dir / "batch2b_pivot_grid_summary.csv"
