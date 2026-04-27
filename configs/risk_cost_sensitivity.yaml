@@ -11,6 +11,18 @@ position_modes:
     max_position_value_pct: 1.0
     max_leverage: 1.0
 
+  capped_2x:
+    max_position_value_pct: 1.0
+    max_leverage: 2.0
+
+  capped_3x:
+    max_position_value_pct: 1.0
+    max_leverage: 3.0
+
+  capped_5x:
+    max_position_value_pct: 1.0
+    max_leverage: 5.0
+
 risk:
   sizing_mode: risk_percent
   risk_per_trade_pct_list:

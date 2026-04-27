@@ -14,6 +14,8 @@ import math
 
 import pandas as pd
 
+from optimize.utils import compute_extra_metrics
+
 from configs.settings import load_settings
 from data.loaders.csv_loader import load_ohlcv_csv
 from strategy.signal_builder import build_signals
@@ -78,32 +80,6 @@ def phase1_score(summary: pd.Series) -> float:
     )
 
 
-def compute_extra_metrics(result) -> dict:
-    """Extract extra statistics from BacktestResult for grid-search logging."""
-    trades = result.trades
-    if trades.empty:
-        return {
-            "long_trades": 0,
-            "short_trades": 0,
-            "target_exits": 0,
-            "stop_exits": 0,
-            "end_of_data_exits": 0,
-            "avg_bars_held": 0.0,
-            "median_bars_held": 0.0,
-        }
-
-    long_mask = trades["side"] == "long"
-    short_mask = trades["side"] == "short"
-
-    return {
-        "long_trades": int(long_mask.sum()),
-        "short_trades": int(short_mask.sum()),
-        "target_exits": int((trades["exit_reason"] == "target").sum()),
-        "stop_exits": int((trades["exit_reason"] == "stop").sum()),
-        "end_of_data_exits": int((trades["exit_reason"] == "end_of_data").sum()),
-        "avg_bars_held": float(trades["bars_held"].mean()),
-        "median_bars_held": float(trades["bars_held"].median()),
-    }
 
 
 def extract_diagnostics(bundle) -> dict:

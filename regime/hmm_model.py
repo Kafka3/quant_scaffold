@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 from hmmlearn.hmm import GaussianHMM
 
 
@@ -13,12 +14,24 @@ def build_regime_features(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def fit_hmm(features: pd.DataFrame, n_states: int = 3) -> GaussianHMM:
-    model = GaussianHMM(n_components=n_states, covariance_type="diag", n_iter=200, random_state=42)
-    model.fit(features[FEATURE_COLUMNS].values)
-    return model
+def fit_predict_hmm_expanding(features: pd.DataFrame, n_states: int = 3, min_train_size: int = 100) -> pd.Series:
+    """
+    使用 expanding window 训练 HMM 并预测状态，避免未来函数。
 
+    对每个时间点 t >= min_train_size：
+      - 用 features[:t] 训练 HMM
+      - 预测 features[t] 的状态
+    前 min_train_size 个点返回 NaN（无法训练）。
+    """
+    n = len(features)
+    states = pd.Series(index=features.index, dtype=float, name="regime")
+    states.iloc[:min_train_size] = np.nan
 
-def predict_states(model: GaussianHMM, features: pd.DataFrame) -> pd.Series:
-    states = model.predict(features[FEATURE_COLUMNS].values)
-    return pd.Series(states, index=features.index, name="regime")
+    for t in range(min_train_size, n):
+        model = GaussianHMM(n_components=n_states, covariance_type="diag", n_iter=200, random_state=42)
+        train_data = features[FEATURE_COLUMNS].iloc[:t].values
+        model.fit(train_data)
+        pred = model.predict(features[FEATURE_COLUMNS].iloc[t : t + 1].values)
+        states.iloc[t] = pred[0]
+
+    return states

@@ -25,6 +25,8 @@ import math
 
 import pandas as pd
 
+from optimize.utils import safe_profit_factor, slice_dataframe, compute_extra_metrics
+
 from configs.settings import load_settings
 from data.loaders.csv_loader import load_ohlcv_csv
 from strategy.signal_builder import build_signals
@@ -69,49 +71,10 @@ FIXED_SETUP = {
 }
 
 
-def _safe_pf(val):
-    if val is None or pd.isna(val):
-        return 0.0
-    if isinstance(val, float) and math.isinf(val):
-        return 5.0
-    v = float(val)
-    if v > 5.0:
-        v = 5.0
-    elif v < 0.0:
-        v = 0.0
-    return v
 
 
-def _slice_df(df: pd.DataFrame, start_str: str, end_str: str) -> pd.DataFrame:
-    start = pd.Timestamp(start_str, tz="UTC")
-    end = pd.Timestamp(end_str, tz="UTC")
-    mask = (df.index >= start) & (df.index < end)
-    return df.loc[mask].copy()
 
 
-def compute_extra_metrics(result) -> dict:
-    trades = result.trades
-    if trades.empty:
-        return {
-            "long_trades": 0,
-            "short_trades": 0,
-            "target_exits": 0,
-            "stop_exits": 0,
-            "end_of_data_exits": 0,
-            "avg_bars_held": 0.0,
-            "median_bars_held": 0.0,
-        }
-    long_mask = trades["side"] == "long"
-    short_mask = trades["side"] == "short"
-    return {
-        "long_trades": int(long_mask.sum()),
-        "short_trades": int(short_mask.sum()),
-        "target_exits": int((trades["exit_reason"] == "target").sum()),
-        "stop_exits": int((trades["exit_reason"] == "stop").sum()),
-        "end_of_data_exits": int((trades["exit_reason"] == "end_of_data").sum()),
-        "avg_bars_held": float(trades["bars_held"].mean()),
-        "median_bars_held": float(trades["bars_held"].median()),
-    }
 
 
 def run_phase2b(df: pd.DataFrame, settings: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -135,7 +98,7 @@ def run_phase2b(df: pd.DataFrame, settings: dict) -> tuple[pd.DataFrame, pd.Data
     for cand, ema_p, buf in product(CANDIDATES, EMA_PERIODS, STOP_BUFFERS):
         for period_name, start_str, end_str in PERIODS:
             run_idx += 1
-            df_slice = _slice_df(df, start_str, end_str)
+            df_slice = slice_dataframe(df, start_str, end_str)
 
             if len(df_slice) < 100:
                 row = {
@@ -205,7 +168,7 @@ def run_phase2b(df: pd.DataFrame, settings: dict) -> tuple[pd.DataFrame, pd.Data
             }
             validation_rows.append(row)
             print(f"[{run_idx:>4}/{total_runs}] {period_name} {cand['candidate_name']} ema={ema_p} buf={buf} -> "
-                  f"return={row['total_return']:>6.2f} trades={row['total_trades']:>3} pf={_safe_pf(row['profit_factor']):.2f}")
+                  f"return={row['total_return']:>6.2f} trades={row['total_trades']:>3} pf={safe_profit_factor(row['profit_factor']):.2f}")
 
     validation_df = pd.DataFrame(validation_rows)
 
@@ -231,7 +194,7 @@ def run_phase2b(df: pd.DataFrame, settings: dict) -> tuple[pd.DataFrame, pd.Data
         if full_year_trades < 80:
             stability_score = -9999.0
         else:
-            full_year_pf_score = _safe_pf(full_year["profit_factor"]) / 5.0
+            full_year_pf_score = safe_profit_factor(full_year["profit_factor"]) / 5.0
             full_year_win_rate = float(full_year["win_rate"] or 0.0)
             q_positive_ratio = q_positive_count / 4.0
             q_pf_min_score = q_pf_min / 5.0

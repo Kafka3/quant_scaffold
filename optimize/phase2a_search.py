@@ -28,6 +28,8 @@ import math
 
 import pandas as pd
 
+from optimize.utils import safe_profit_factor, slice_dataframe, compute_extra_metrics
+
 from configs.settings import load_settings
 from data.loaders.csv_loader import load_ohlcv_csv
 from strategy.signal_builder import build_signals
@@ -56,54 +58,10 @@ FIXED_PIVOTS = {
 }
 
 
-def _safe_pf(val):
-    """Safely normalize profit_factor for scoring."""
-    if val is None or pd.isna(val):
-        return 0.0
-    if isinstance(val, float) and math.isinf(val):
-        return 5.0
-    v = float(val)
-    if v > 5.0:
-        v = 5.0
-    elif v < 0.0:
-        v = 0.0
-    return v
 
 
-def _slice_df(df: pd.DataFrame, start_str: str, end_str: str) -> pd.DataFrame:
-    """Slice DataFrame by date strings (inclusive start, exclusive end)."""
-    start = pd.Timestamp(start_str, tz="UTC")
-    end = pd.Timestamp(end_str, tz="UTC")
-    mask = (df.index >= start) & (df.index < end)
-    return df.loc[mask].copy()
 
 
-def compute_extra_metrics(result) -> dict:
-    """Extract extra statistics from BacktestResult."""
-    trades = result.trades
-    if trades.empty:
-        return {
-            "long_trades": 0,
-            "short_trades": 0,
-            "target_exits": 0,
-            "stop_exits": 0,
-            "end_of_data_exits": 0,
-            "avg_bars_held": 0.0,
-            "median_bars_held": 0.0,
-        }
-
-    long_mask = trades["side"] == "long"
-    short_mask = trades["side"] == "short"
-
-    return {
-        "long_trades": int(long_mask.sum()),
-        "short_trades": int(short_mask.sum()),
-        "target_exits": int((trades["exit_reason"] == "target").sum()),
-        "stop_exits": int((trades["exit_reason"] == "stop").sum()),
-        "end_of_data_exits": int((trades["exit_reason"] == "end_of_data").sum()),
-        "avg_bars_held": float(trades["bars_held"].mean()),
-        "median_bars_held": float(trades["bars_held"].median()),
-    }
 
 
 def run_phase2a(df: pd.DataFrame, settings: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -130,7 +88,7 @@ def run_phase2a(df: pd.DataFrame, settings: dict) -> tuple[pd.DataFrame, pd.Data
     for rr, (os_val, ob_val) in product(rr_targets, threshold_pairs):
         for period_name, start_str, end_str in PERIODS:
             run_idx += 1
-            df_slice = _slice_df(df, start_str, end_str)
+            df_slice = slice_dataframe(df, start_str, end_str)
 
             if len(df_slice) < 100:
                 row = {
@@ -191,7 +149,7 @@ def run_phase2a(df: pd.DataFrame, settings: dict) -> tuple[pd.DataFrame, pd.Data
             }
             validation_rows.append(row)
             print(f"[{run_idx:>3}/{total_runs}] {period_name} rr={rr} os={os_val} ob={ob_val} -> "
-                  f"return={row['total_return']:>6.2f} trades={row['total_trades']:>3} pf={_safe_pf(row['profit_factor']):.2f}")
+                  f"return={row['total_return']:>6.2f} trades={row['total_trades']:>3} pf={safe_profit_factor(row['profit_factor']):.2f}")
 
     validation_df = pd.DataFrame(validation_rows)
 
@@ -216,7 +174,7 @@ def run_phase2a(df: pd.DataFrame, settings: dict) -> tuple[pd.DataFrame, pd.Data
         if full_year_trades < 80:
             stability_score = -9999.0
         else:
-            full_year_pf_score = _safe_pf(full_year["profit_factor"]) / 5.0
+            full_year_pf_score = safe_profit_factor(full_year["profit_factor"]) / 5.0
             full_year_win_rate = float(full_year["win_rate"] or 0.0)
             q_positive_ratio = q_positive_count / 4.0
             q_pf_min_score = q_pf_min / 5.0
@@ -300,7 +258,7 @@ def main() -> None:
         b = baseline.iloc[0]
         print(f"\n3. Baseline (rr=2.0, os=20, ob=80):")
         print(f"   return={b['full_year_total_return']:.2f}% trades={b['full_year_total_trades']:.0f} "
-              f"pf={_safe_pf(b['full_year_profit_factor']):.2f} q+={b['q_positive_count']:.0f}/4 "
+              f"pf={safe_profit_factor(b['full_year_profit_factor']):.2f} q+={b['q_positive_count']:.0f}/4 "
               f"q_min_pf={b['q_profit_factor_min']:.2f} stability={b['stability_score']:.4f}")
     else:
         print("\n3. Baseline: NOT FOUND")
@@ -315,7 +273,7 @@ def main() -> None:
         beaters = summary_df[
             (summary_df["q_positive_count"] == 4)
             & (summary_df["q_trade_count_min"] >= 20)
-            & (summary_df["full_year_profit_factor"] >= _safe_pf(b["full_year_profit_factor"]))
+            & (summary_df["full_year_profit_factor"] >= safe_profit_factor(b["full_year_profit_factor"]))
             & (summary_df["full_year_total_return"] >= b["full_year_total_return"])
             & (summary_df["q_profit_factor_min"] >= 1.3)
         ]

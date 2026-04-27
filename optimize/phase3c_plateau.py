@@ -22,6 +22,8 @@ import math
 import itertools
 
 import pandas as pd
+
+from optimize.utils import safe_profit_factor, slice_dataframe, compute_extra_metrics
 from joblib import Parallel, delayed
 
 from data.loaders.csv_loader import load_ohlcv_csv
@@ -67,49 +69,10 @@ BASELINE = {
 }
 
 
-def _safe_pf(val):
-    if val is None or pd.isna(val):
-        return 0.0
-    if isinstance(val, float) and math.isinf(val):
-        return 5.0
-    v = float(val)
-    if v > 5.0:
-        v = 5.0
-    elif v < 0.0:
-        v = 0.0
-    return v
 
 
-def _slice_df(df: pd.DataFrame, start_str: str, end_str: str) -> pd.DataFrame:
-    start = pd.Timestamp(start_str, tz="UTC")
-    end = pd.Timestamp(end_str, tz="UTC")
-    mask = (df.index >= start) & (df.index < end)
-    return df.loc[mask].copy()
 
 
-def compute_extra_metrics(result) -> dict:
-    trades = result.trades
-    if trades.empty:
-        return {
-            "long_trades": 0,
-            "short_trades": 0,
-            "target_exits": 0,
-            "stop_exits": 0,
-            "end_of_data_exits": 0,
-            "avg_bars_held": 0.0,
-            "median_bars_held": 0.0,
-        }
-    long_mask = trades["side"] == "long"
-    short_mask = trades["side"] == "short"
-    return {
-        "long_trades": int(long_mask.sum()),
-        "short_trades": int(short_mask.sum()),
-        "target_exits": int((trades["exit_reason"] == "target").sum()),
-        "stop_exits": int((trades["exit_reason"] == "stop").sum()),
-        "end_of_data_exits": int((trades["exit_reason"] == "end_of_data").sum()),
-        "avg_bars_held": float(trades["bars_held"].mean()),
-        "median_bars_held": float(trades["bars_held"].median()),
-    }
 
 
 def build_config(param_combo: dict) -> dict:
@@ -265,7 +228,7 @@ def run_plateau_analysis(df: pd.DataFrame, cost_overrides: dict, label: str) -> 
 
     # Pre-slice data into periods to avoid repeated slicing
     df_periods = [
-        (period_name, start_str, end_str, _slice_df(df, start_str, end_str))
+        (period_name, start_str, end_str, slice_dataframe(df, start_str, end_str))
         for period_name, start_str, end_str in PERIODS
     ]
 

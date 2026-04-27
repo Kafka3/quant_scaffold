@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-Phase 4 — Risk Sensitivity and Cost Analysis for robust_ema55.
+Phase 4B — Position Cap / Leverage Sensitivity Analysis.
 
-Tests 6 risk-per-trade levels × 2 position modes across 9 periods.
-Generates trades, equity curves, summary statistics, and skipped records.
+Tests 3 risk-per-trade levels across 4 position-cap modes and 9 periods.
 
 Usage:
-    python optimize/phase4_risk_sensitivity.py \
+    python optimize/phase4b_position_cap.py \
       --config configs/candidates/robust_ema55.yaml \
       --risk-config configs/risk_cost_sensitivity.yaml \
       --data data/raw/BTCUSDT_5m_2024_2025.csv
@@ -62,7 +61,6 @@ def _run_one(
     bundle = build_signals(df_slice, strategy_config["strategy"])
 
     mode_cfg = risk_cost_config["position_modes"][position_mode]
-    # Temporarily override the risk config for this mode
     rc_copy = dict(risk_cost_config)
     rc_copy["risk"] = dict(risk_cost_config.get("risk", {}))
     rc_copy["risk"]["max_position_value_pct"] = mode_cfg["max_position_value_pct"]
@@ -82,15 +80,6 @@ def _run_one(
     trades["risk_per_trade_pct"] = risk_pct
     trades["period"] = period_name
 
-    equity = result.equity.to_frame(name="equity")
-    equity["position_mode"] = position_mode
-    equity["risk_per_trade_pct"] = risk_pct
-    equity["period"] = period_name
-    equity["drawdown"] = equity["equity"] - equity["equity"].cummax()
-    equity["drawdown_pct"] = equity["drawdown"] / equity["equity"].cummax() * 100
-    equity["bar_return"] = equity["equity"].pct_change()
-    equity = equity.reset_index().rename(columns={"index": "time"})
-
     skipped = result.skipped.copy()
     skipped["position_mode"] = position_mode
     skipped["risk_per_trade_pct"] = risk_pct
@@ -104,11 +93,11 @@ def _run_one(
     summary["end_time"] = end_str
     summary["initial_cash"] = risk_cost_config.get("account", {}).get("initial_cash", 100000)
 
-    return trades, equity, skipped, summary
+    return trades, pd.DataFrame(), skipped, summary
 
 
 def main() -> None:
-    parser = ArgumentParser(description="Phase 4 — Risk Sensitivity Analysis")
+    parser = ArgumentParser(description="Phase 4B — Position Cap / Leverage Sensitivity")
     parser.add_argument("--config", required=True, help="Path to candidate strategy config YAML")
     parser.add_argument("--risk-config", required=True, help="Path to risk/cost config YAML")
     parser.add_argument("--data", dest="data_path", required=True, help="Path to OHLCV CSV")
@@ -124,8 +113,9 @@ def main() -> None:
     print(f"Full range:  {df_full.index[0]} ~ {df_full.index[-1]}")
     print(f"Total bars:  {len(df_full)}")
 
-    risk_list = risk_cost_config["risk"]["risk_per_trade_pct_list"]
-    mode_list = list(risk_cost_config["position_modes"].keys())
+    # Phase 4B only tests 0.5%, 1%, 2%
+    risk_list = [0.005, 0.01, 0.02]
+    mode_list = ["capped_1x", "capped_2x", "capped_3x", "capped_5x"]
     total_runs = len(mode_list) * len(risk_list) * len(PERIODS)
     print(f"\nPosition modes: {mode_list}")
     print(f"Risk levels:    {risk_list}")
@@ -134,7 +124,6 @@ def main() -> None:
     print("=" * 60)
 
     all_trades = []
-    all_equity = []
     all_skipped = []
     all_summaries = []
 
@@ -145,18 +134,15 @@ def main() -> None:
                 run_idx += 1
                 print(f"[{run_idx:>3}/{total_runs}] mode={position_mode} risk={risk_pct:.1%}  {period_name}")
 
-                trades, equity, skipped, summary = _run_one(
+                trades, _, skipped, summary = _run_one(
                     position_mode, risk_pct, period_name, start_str, end_str,
                     df_full, strategy_config, risk_cost_config,
                 )
                 all_trades.append(trades)
-                all_equity.append(equity)
                 all_skipped.append(skipped)
                 all_summaries.append(summary)
 
-    # Combine results
     trades_df = pd.concat(all_trades, ignore_index=True) if all_trades else pd.DataFrame()
-    equity_df = pd.concat(all_equity, ignore_index=True) if all_equity else pd.DataFrame()
     skipped_df = pd.concat(all_skipped, ignore_index=True) if all_skipped else pd.DataFrame()
     summary_df = pd.DataFrame(all_summaries)
 
@@ -172,7 +158,6 @@ def main() -> None:
     if "net_profit" not in summary_df.columns or summary_df["net_profit"].isna().all():
         summary_df["net_profit"] = summary_df["ending_equity"] - ic
 
-    # Column order
     summary_cols = [
         "position_mode", "risk_per_trade_pct", "period", "start_time", "end_time",
         "initial_cash", "ending_equity", "net_profit", "total_return",
@@ -203,24 +188,21 @@ def main() -> None:
     available_cols = [c for c in summary_cols if c in summary_df.columns]
     summary_df = summary_df[available_cols]
 
-    # Save
     Path("reports").mkdir(exist_ok=True)
-    trades_df.to_csv("reports/phase4_risk_sensitivity_trades.csv", index=False)
-    summary_df.to_csv("reports/phase4_risk_sensitivity_summary.csv", index=False)
-    equity_df.to_csv("reports/phase4_risk_sensitivity_equity.csv", index=False)
-    skipped_df.to_csv("reports/phase4_risk_sensitivity_skipped.csv", index=False)
+    trades_df.to_csv("reports/phase4b_position_cap_trades.csv", index=False)
+    summary_df.to_csv("reports/phase4b_position_cap_summary.csv", index=False)
+    skipped_df.to_csv("reports/phase4b_position_cap_skipped.csv", index=False)
 
     print("\n" + "=" * 60)
     print("Reports saved:")
-    print("  reports/phase4_risk_sensitivity_trades.csv")
-    print("  reports/phase4_risk_sensitivity_summary.csv")
-    print("  reports/phase4_risk_sensitivity_equity.csv")
-    print("  reports/phase4_risk_sensitivity_skipped.csv")
+    print("  reports/phase4b_position_cap_trades.csv")
+    print("  reports/phase4b_position_cap_summary.csv")
+    print("  reports/phase4b_position_cap_skipped.csv")
     print("=" * 60)
 
     # Final analysis
     print("\n" + "=" * 60)
-    print("Phase 4 — Risk Sensitivity Final Analysis")
+    print("Phase 4B — Position Cap / Leverage Sensitivity Final Analysis")
     print("=" * 60)
 
     full_period = "2024-2025-Full"
@@ -228,64 +210,64 @@ def main() -> None:
 
     print(f"\n1. 是否成功运行: YES ({len(summary_df)} summary rows)")
     print(f"2. 是否完成 108 次运行: {'YES' if len(summary_df) == 108 else 'NO'} ({len(summary_df)} rows)")
-    print(f"3. 报告文件是否生成: YES (4 files)")
+    print(f"3. 报告文件是否生成: YES (3 files)")
 
-    print("\n4. uncapped 模式下 2024-2025 Full 表现:")
-    uncapped = full_df[full_df["position_mode"] == "uncapped"]
-    disp = ["risk_per_trade_pct", "ending_equity", "total_return", "total_trades",
-            "win_rate", "profit_factor", "sharpe_ratio", "max_drawdown_pct",
-            "expectancy_r", "avg_actual_risk_pct", "max_actual_risk_pct"]
-    print(uncapped[[c for c in disp if c in uncapped.columns]].to_string(index=False))
+    print("\n4. 2024-2025 Full 结果表:")
+    disp_cols = [
+        "position_mode", "risk_per_trade_pct", "ending_equity", "total_return",
+        "profit_factor", "sharpe_ratio", "max_drawdown_pct",
+        "avg_actual_risk_pct", "cap_hit_rate", "cost_as_pct_of_gross_profit",
+    ]
+    print(full_df[[c for c in disp_cols if c in full_df.columns]].to_string(index=False))
 
-    print("\n5. capped_1x 模式下 2024-2025 Full 表现:")
-    capped = full_df[full_df["position_mode"] == "capped_1x"]
-    disp2 = ["risk_per_trade_pct", "ending_equity", "total_return", "cap_hit_count",
-             "cap_hit_rate", "avg_actual_risk_pct", "max_actual_risk_pct", "profit_factor"]
-    print(capped[[c for c in disp2 if c in capped.columns]].to_string(index=False))
+    print("\n5. 季度稳定性统计:")
+    quarters = summary_df[summary_df["period"] != full_period]
+    for mode in sorted(quarters["position_mode"].unique()):
+        print(f"\n  [{mode}]")
+        for risk in sorted(quarters["risk_per_trade_pct"].unique()):
+            sub = quarters[(quarters["position_mode"] == mode) & (quarters["risk_per_trade_pct"] == risk)]
+            pos = len(sub[sub["total_return"] > 0])
+            worst_ret = sub["total_return"].min()
+            worst_dd = sub["max_drawdown_pct"].min()
+            worst_pf = sub["profit_factor"].min()
+            worst_sharpe = sub["sharpe_ratio"].min()
+            print(f"    risk={risk:.1%}: 盈利季度={pos}/8  最差return={worst_ret:.2f}%  最差DD={worst_dd:.2f}%  最差PF={worst_pf:.2f}  最差Sharpe={worst_sharpe:.2f}")
 
-    print("\n6. 各风险档季度表现 (uncapped):")
-    q_uncapped = summary_df[(summary_df["period"] != full_period) & (summary_df["position_mode"] == "uncapped")]
-    for risk in sorted(q_uncapped["risk_per_trade_pct"].unique()):
-        sub = q_uncapped[q_uncapped["risk_per_trade_pct"] == risk]
-        pos = len(sub[sub["total_return"] > 0])
-        print(f"  risk={risk:.1%}: 盈利季度={pos}/8  最差return={sub['total_return'].min():.2f}%  最差DD={sub['max_drawdown_pct'].min():.2f}%  最差PF={sub['profit_factor'].min():.2f}")
+    print("\n6. 哪个 position cap 能最合理表达 0.5% 风险:")
+    half_pct = full_df[full_df["risk_per_trade_pct"] == 0.005][["position_mode", "avg_actual_risk_pct", "cap_hit_rate", "max_drawdown_pct", "profit_factor"]]
+    print(half_pct.to_string(index=False))
 
-    print("\n7. 各风险档季度表现 (capped_1x):")
-    q_capped = summary_df[(summary_df["period"] != full_period) & (summary_df["position_mode"] == "capped_1x")]
-    for risk in sorted(q_capped["risk_per_trade_pct"].unique()):
-        sub = q_capped[q_capped["risk_per_trade_pct"] == risk]
-        pos = len(sub[sub["total_return"] > 0])
-        print(f"  risk={risk:.1%}: 盈利季度={pos}/8  最差return={sub['total_return'].min():.2f}%  最差DD={sub['max_drawdown_pct'].min():.2f}%  cap_hit={sub['cap_hit_count'].sum()}")
+    print("\n7. 1% 风险是否可接受:")
+    one_pct = full_df[full_df["risk_per_trade_pct"] == 0.01][["position_mode", "avg_actual_risk_pct", "cap_hit_rate", "max_drawdown_pct", "profit_factor"]]
+    print(one_pct.to_string(index=False))
 
-    print("\n8. 推荐:")
+    print("\n8. Paper Trading 建议:")
     for _, row in full_df.iterrows():
         mode = row["position_mode"]
         risk = row["risk_per_trade_pct"]
         pf = row.get("profit_factor", 0)
-        exp_r = row.get("expectancy_r", 0)
         sharpe = row.get("sharpe_ratio", float("nan"))
         dd = row.get("max_drawdown_pct", 0)
-        q_sub = summary_df[(summary_df["position_mode"] == mode) & (summary_df["risk_per_trade_pct"] == risk) & (summary_df["period"] != full_period)]
+        cap_rate = row.get("cap_hit_rate", 1.0)
+        actual_risk = row.get("avg_actual_risk_pct", 0)
+        q_sub = quarters[(quarters["position_mode"] == mode) & (quarters["risk_per_trade_pct"] == risk)]
         pos_q = len(q_sub[q_sub["total_return"] > 0])
 
         if pd.isna(pf) or (isinstance(pf, float) and pf == float("inf")):
             pf = 999.0
 
-        if pf >= 1.6 and exp_r >= 0.2 and sharpe >= 1.0 and dd >= -6 and pos_q >= 7:
-            rec = "✅ 推荐 paper trading"
-        elif pf >= 1.3 and exp_r > 0 and sharpe > 0 and dd >= -10 and pos_q >= 6:
-            rec = "🟡 可用于 paper trading"
-        elif dd < -15 or sharpe < 0 or pos_q < 6:
-            rec = "❌ 仅压力测试"
+        if pf >= 1.3 and sharpe > 0 and dd >= -10 and pos_q >= 6 and cap_rate < 0.95 and actual_risk >= risk * 0.7:
+            if dd >= -6 and sharpe >= 1.0 and risk <= 0.01:
+                rec = "✅ 优先推荐 paper trading"
+            else:
+                rec = "🟡 可用于 paper trading"
+        elif pf >= 1.3 and sharpe > 0 and dd >= -10 and pos_q >= 6:
+            rec = "🟡 边缘，需关注 cap"
         else:
-            rec = "🟡 边缘"
+            rec = "❌ 不建议"
         print(f"  {mode} risk={risk:.1%}: {rec}")
 
     print("\n" + "=" * 60)
-    print("确认:")
-    print("  - uncapped 模式用于理论压力测试")
-    print("  - capped_1x 模式用于现实 1x 仓位约束测试")
-    print("=" * 60)
 
 
 if __name__ == "__main__":

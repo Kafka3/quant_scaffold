@@ -16,7 +16,8 @@ def run_custom_backtest(df: pd.DataFrame, bundle, config: dict) -> BacktestResul
     Simple bar-by-bar backtester for dynamic stops/targets.
     Assumes only one position at a time, long or short.
     """
-    cash = config["backtest"]["init_cash"]
+    cash = config["backtest"]["initial_cash"]
+    qty = config.get("backtest", {}).get("qty", 1.0)
     position = 0  # 1 for long, -1 for short, 0 for flat
     entry_price = 0.0
     stop_price = 0.0
@@ -33,26 +34,26 @@ def run_custom_backtest(df: pd.DataFrame, bundle, config: dict) -> BacktestResul
         if position == 1:  # Long
             if low <= stop_price:  # Hit stop
                 exit_price = stop_price
-                pnl = exit_price - entry_price
+                pnl = (exit_price - entry_price) * qty
                 cash += pnl
                 trades.append({'type': 'long', 'entry': entry_price, 'exit': exit_price, 'pnl': pnl, 'exit_reason': 'stop'})
                 position = 0
             elif high >= target_price:  # Hit target
                 exit_price = target_price
-                pnl = exit_price - entry_price
+                pnl = (exit_price - entry_price) * qty
                 cash += pnl
                 trades.append({'type': 'long', 'entry': entry_price, 'exit': exit_price, 'pnl': pnl, 'exit_reason': 'target'})
                 position = 0
         elif position == -1:  # Short
             if high >= stop_price:  # Hit stop
                 exit_price = stop_price
-                pnl = entry_price - exit_price
+                pnl = (entry_price - exit_price) * qty
                 cash += pnl
                 trades.append({'type': 'short', 'entry': entry_price, 'exit': exit_price, 'pnl': pnl, 'exit_reason': 'stop'})
                 position = 0
             elif low <= target_price:  # Hit target
                 exit_price = target_price
-                pnl = entry_price - exit_price
+                pnl = (entry_price - exit_price) * qty
                 cash += pnl
                 trades.append({'type': 'short', 'entry': entry_price, 'exit': exit_price, 'pnl': pnl, 'exit_reason': 'target'})
                 position = 0

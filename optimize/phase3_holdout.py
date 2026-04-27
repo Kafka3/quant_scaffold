@@ -24,6 +24,8 @@ import glob
 
 import pandas as pd
 
+from optimize.utils import safe_profit_factor, safe_win_rate, slice_dataframe, compute_extra_metrics
+
 from configs.settings import load_settings
 from data.loaders.csv_loader import load_ohlcv_csv
 from strategy.signal_builder import build_signals
@@ -39,61 +41,12 @@ PERIODS = [
 ]
 
 
-def _safe_pf(val):
-    """Safely normalize profit_factor for scoring."""
-    if val is None or pd.isna(val):
-        return 0.0
-    if isinstance(val, float) and math.isinf(val):
-        return 5.0
-    v = float(val)
-    if v > 5.0:
-        v = 5.0
-    elif v < 0.0:
-        v = 0.0
-    return v
 
 
-def _safe_win_rate(val):
-    """Safely normalize win_rate."""
-    if val is None or pd.isna(val):
-        return 0.0
-    return float(val)
 
 
-def _slice_df(df: pd.DataFrame, start_str: str, end_str: str) -> pd.DataFrame:
-    """Slice DataFrame by date strings (inclusive start, exclusive end)."""
-    start = pd.Timestamp(start_str, tz="UTC")
-    end = pd.Timestamp(end_str, tz="UTC")
-    mask = (df.index >= start) & (df.index < end)
-    return df.loc[mask].copy()
 
 
-def compute_extra_metrics(result) -> dict:
-    """Extract extra statistics from BacktestResult."""
-    trades = result.trades
-    if trades.empty:
-        return {
-            "long_trades": 0,
-            "short_trades": 0,
-            "target_exits": 0,
-            "stop_exits": 0,
-            "end_of_data_exits": 0,
-            "avg_bars_held": 0.0,
-            "median_bars_held": 0.0,
-        }
-
-    long_mask = trades["side"] == "long"
-    short_mask = trades["side"] == "short"
-
-    return {
-        "long_trades": int(long_mask.sum()),
-        "short_trades": int(short_mask.sum()),
-        "target_exits": int((trades["exit_reason"] == "target").sum()),
-        "stop_exits": int((trades["exit_reason"] == "stop").sum()),
-        "end_of_data_exits": int((trades["exit_reason"] == "end_of_data").sum()),
-        "avg_bars_held": float(trades["bars_held"].mean()),
-        "median_bars_held": float(trades["bars_held"].median()),
-    }
 
 
 def run_holdout(df: pd.DataFrame, candidate_configs: list, backtest_overrides: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -122,7 +75,7 @@ def run_holdout(df: pd.DataFrame, candidate_configs: list, backtest_overrides: d
 
         for period_name, start_str, end_str in PERIODS:
             run_idx += 1
-            df_slice = _slice_df(df, start_str, end_str)
+            df_slice = slice_dataframe(df, start_str, end_str)
 
             if len(df_slice) < 100:
                 row = {
@@ -198,7 +151,7 @@ def run_holdout(df: pd.DataFrame, candidate_configs: list, backtest_overrides: d
             validation_rows.append(row)
             print(
                 f"[{run_idx:>3}/{total_runs}] {candidate_name} {period_name} -> "
-                f"return={row['total_return']:>6.2f} trades={row['total_trades']:>3} pf={_safe_pf(row['profit_factor']):.2f}"
+                f"return={row['total_return']:>6.2f} trades={row['total_trades']:>3} pf={safe_profit_factor(row['profit_factor']):.2f}"
             )
 
     validation_df = pd.DataFrame(validation_rows)
@@ -225,8 +178,8 @@ def run_holdout(df: pd.DataFrame, candidate_configs: list, backtest_overrides: d
         if full_year_trades < 50:
             holdout_score = -9999.0
         else:
-            full_year_pf_score = _safe_pf(full_year["profit_factor"]) / 5.0
-            full_year_win_rate_val = _safe_win_rate(full_year["win_rate"])
+            full_year_pf_score = safe_profit_factor(full_year["profit_factor"]) / 5.0
+            full_year_win_rate_val = safe_win_rate(full_year["win_rate"])
             q_positive_ratio = q_positive_count / 4.0
             q_pf_min_score = q_pf_min / 5.0
             return_score = max(-1.0, min(1.0, full_year["total_return"] / 20.0))
@@ -354,7 +307,7 @@ def main() -> None:
         print(
             f"   {row['candidate_name']}: return={row['full_year_total_return']:.2f}%  "
             f"trades={row['full_year_total_trades']}  win_rate={row['full_year_win_rate']:.2%}  "
-            f"pf={_safe_pf(row['full_year_profit_factor']):.2f}  mdd={row['full_year_max_drawdown']:.2f}%  "
+            f"pf={safe_profit_factor(row['full_year_profit_factor']):.2f}  mdd={row['full_year_max_drawdown']:.2f}%  "
             f"holdout_score={row['holdout_score']:.4f}"
         )
 
@@ -385,7 +338,7 @@ def main() -> None:
         else:
             checks.append("q_trade_min>=10: FAIL")
 
-        if _safe_pf(row["full_year_profit_factor"]) >= 1.3:
+        if safe_profit_factor(row["full_year_profit_factor"]) >= 1.3:
             checks.append("fy_pf>=1.3: PASS")
         else:
             checks.append("fy_pf>=1.3: FAIL")
