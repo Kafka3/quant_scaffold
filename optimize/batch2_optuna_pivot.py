@@ -278,10 +278,6 @@ def main():
         min_sep = trial.suggest_int("min_separation", 5, 10)
         max_sep = trial.suggest_int("max_separation", 30, 50)
 
-        # Hard constraint
-        if max_sep < min_sep + 10:
-            return -9999.0
-
         val_results, summary_results = evaluate_combo(min_sep, max_sep, df_full)
 
         # Attach trial_id and store for reporting
