@@ -37,29 +37,25 @@ class DivergenceResult:
 
 
 def _pivot_high(series: pd.Series, left: int, right: int, strict: bool = True) -> pd.Series:
-    out = pd.Series(False, index=series.index)
-    for i in range(left, len(series) - right):
-        if strict:
-            left_max = series.iloc[i - left : i].max()
-            right_max = series.iloc[i + 1 : i + right + 1].max()
-            out.iloc[i] = series.iloc[i] > left_max and series.iloc[i] > right_max
-        else:
-            window = series.iloc[i - left : i + right + 1]
-            out.iloc[i] = series.iloc[i] == window.max()
-    return out
+    if strict:
+        rolled_left = series.rolling(window=left, min_periods=left).max().shift(1)
+        rolled_right = series[::-1].rolling(window=right, min_periods=right).max()[::-1].shift(-right)
+        result = (series > rolled_left) & (series > rolled_right)
+    else:
+        rolled = series.rolling(window=left + right + 1, min_periods=left + right + 1, center=True).max()
+        result = series == rolled
+    return result
 
 
 def _pivot_low(series: pd.Series, left: int, right: int, strict: bool = True) -> pd.Series:
-    out = pd.Series(False, index=series.index)
-    for i in range(left, len(series) - right):
-        if strict:
-            left_min = series.iloc[i - left : i].min()
-            right_min = series.iloc[i + 1 : i + right + 1].min()
-            out.iloc[i] = series.iloc[i] < left_min and series.iloc[i] < right_min
-        else:
-            window = series.iloc[i - left : i + right + 1]
-            out.iloc[i] = series.iloc[i] == window.min()
-    return out
+    if strict:
+        rolled_left = series.rolling(window=left, min_periods=left).min().shift(1)
+        rolled_right = series[::-1].rolling(window=right, min_periods=right).min()[::-1].shift(-right)
+        result = (series < rolled_left) & (series < rolled_right)
+    else:
+        rolled = series.rolling(window=left + right + 1, min_periods=left + right + 1, center=True).min()
+        result = series == rolled
+    return result
 
 
 def detect_regular_divergence(
@@ -128,6 +124,14 @@ def detect_regular_divergence(
     bullish_channel_break_ok = pd.Series(False, index=df.index)
     bearish_channel_break_ok = pd.Series(False, index=df.index)
 
+    # Bullish loop: collect confirm indices and data, then batch-assign.
+    bullish_raw_list = []
+    bullish_prior_list = []
+    bullish_p1_ch_list = []
+    bullish_p2_ch_list = []
+    bullish_ch_br_list = []
+    bullish_list = []
+
     low_idx = list(df.index[pivot_low])
     for i in range(1, len(low_idx)):
         idx1, idx2 = low_idx[i - 1], low_idx[i]
@@ -145,22 +149,50 @@ def detect_regular_divergence(
                     prior_ok = bool(trend["prior_uptrend"].loc[idx1])
                     channel_ok = p1_ch_ok and p2_ch_ok
 
-                    bullish_raw_divergence.loc[confirm_idx] = True
-                    bullish_prior_trend_ok.loc[confirm_idx] = prior_ok
-                    bullish_pivot1_channel_ok.loc[confirm_idx] = p1_ch_ok
-                    bullish_pivot2_channel_ok.loc[confirm_idx] = p2_ch_ok
-                    bullish_channel_break_ok.loc[confirm_idx] = channel_ok
+                    bullish_raw_list.append(confirm_idx)
+                    bullish_prior_list.append((confirm_idx, prior_ok))
+                    bullish_p1_ch_list.append((confirm_idx, p1_ch_ok))
+                    bullish_p2_ch_list.append((confirm_idx, p2_ch_ok))
+                    bullish_ch_br_list.append((confirm_idx, channel_ok))
 
                     if prior_ok and channel_ok:
-                        bullish.loc[confirm_idx] = True
-                        bullish_pivot1_idx.loc[confirm_idx] = idx1
-                        bullish_pivot2_idx.loc[confirm_idx] = idx2
-                        bullish_pivot1_price.loc[confirm_idx] = low.loc[idx1]
-                        bullish_pivot2_price.loc[confirm_idx] = low.loc[idx2]
-                        bullish_trigger_price.loc[confirm_idx] = high.loc[idx2]
-                        bullish_stop_anchor.loc[confirm_idx] = low.loc[idx2]
-                        bullish_confirm_idx.loc[confirm_idx] = confirm_idx
-                        bullish_confirm_pos.loc[confirm_idx] = confirm_pos
+                        bullish_list.append({
+                            "idx": confirm_idx,
+                            "p1_idx": idx1,
+                            "p2_idx": idx2,
+                            "p1_price": low.loc[idx1],
+                            "p2_price": low.loc[idx2],
+                            "trigger_price": high.loc[idx2],
+                            "stop_anchor": low.loc[idx2],
+                            "confirm_pos": confirm_pos,
+                        })
+
+    if bullish_raw_list:
+        bullish_raw_divergence.loc[bullish_raw_list] = True
+        bullish_prior_trend_ok.loc[[x[0] for x in bullish_prior_list]] = [x[1] for x in bullish_prior_list]
+        bullish_pivot1_channel_ok.loc[[x[0] for x in bullish_p1_ch_list]] = [x[1] for x in bullish_p1_ch_list]
+        bullish_pivot2_channel_ok.loc[[x[0] for x in bullish_p2_ch_list]] = [x[1] for x in bullish_p2_ch_list]
+        bullish_channel_break_ok.loc[[x[0] for x in bullish_ch_br_list]] = [x[1] for x in bullish_ch_br_list]
+
+    if bullish_list:
+        idxs = [d["idx"] for d in bullish_list]
+        bullish.loc[idxs] = True
+        bullish_pivot1_idx.loc[idxs] = [d["p1_idx"] for d in bullish_list]
+        bullish_pivot2_idx.loc[idxs] = [d["p2_idx"] for d in bullish_list]
+        bullish_pivot1_price.loc[idxs] = [d["p1_price"] for d in bullish_list]
+        bullish_pivot2_price.loc[idxs] = [d["p2_price"] for d in bullish_list]
+        bullish_trigger_price.loc[idxs] = [d["trigger_price"] for d in bullish_list]
+        bullish_stop_anchor.loc[idxs] = [d["stop_anchor"] for d in bullish_list]
+        bullish_confirm_idx.loc[idxs] = idxs
+        bullish_confirm_pos.loc[idxs] = [d["confirm_pos"] for d in bullish_list]
+
+    # Bearish loop: collect confirm indices and data, then batch-assign.
+    bearish_raw_list = []
+    bearish_prior_list = []
+    bearish_p1_ch_list = []
+    bearish_p2_ch_list = []
+    bearish_ch_br_list = []
+    bearish_list = []
 
     high_idx = list(df.index[pivot_high])
     for i in range(1, len(high_idx)):
@@ -179,22 +211,42 @@ def detect_regular_divergence(
                     prior_ok = bool(trend["prior_downtrend"].loc[idx1])
                     channel_ok = p1_ch_ok and p2_ch_ok
 
-                    bearish_raw_divergence.loc[confirm_idx] = True
-                    bearish_prior_trend_ok.loc[confirm_idx] = prior_ok
-                    bearish_pivot1_channel_ok.loc[confirm_idx] = p1_ch_ok
-                    bearish_pivot2_channel_ok.loc[confirm_idx] = p2_ch_ok
-                    bearish_channel_break_ok.loc[confirm_idx] = channel_ok
+                    bearish_raw_list.append(confirm_idx)
+                    bearish_prior_list.append((confirm_idx, prior_ok))
+                    bearish_p1_ch_list.append((confirm_idx, p1_ch_ok))
+                    bearish_p2_ch_list.append((confirm_idx, p2_ch_ok))
+                    bearish_ch_br_list.append((confirm_idx, channel_ok))
 
                     if prior_ok and channel_ok:
-                        bearish.loc[confirm_idx] = True
-                        bearish_pivot1_idx.loc[confirm_idx] = idx1
-                        bearish_pivot2_idx.loc[confirm_idx] = idx2
-                        bearish_pivot1_price.loc[confirm_idx] = high.loc[idx1]
-                        bearish_pivot2_price.loc[confirm_idx] = high.loc[idx2]
-                        bearish_trigger_price.loc[confirm_idx] = low.loc[idx2]
-                        bearish_stop_anchor.loc[confirm_idx] = high.loc[idx2]
-                        bearish_confirm_idx.loc[confirm_idx] = confirm_idx
-                        bearish_confirm_pos.loc[confirm_idx] = confirm_pos
+                        bearish_list.append({
+                            "idx": confirm_idx,
+                            "p1_idx": idx1,
+                            "p2_idx": idx2,
+                            "p1_price": high.loc[idx1],
+                            "p2_price": high.loc[idx2],
+                            "trigger_price": low.loc[idx2],
+                            "stop_anchor": high.loc[idx2],
+                            "confirm_pos": confirm_pos,
+                        })
+
+    if bearish_raw_list:
+        bearish_raw_divergence.loc[bearish_raw_list] = True
+        bearish_prior_trend_ok.loc[[x[0] for x in bearish_prior_list]] = [x[1] for x in bearish_prior_list]
+        bearish_pivot1_channel_ok.loc[[x[0] for x in bearish_p1_ch_list]] = [x[1] for x in bearish_p1_ch_list]
+        bearish_pivot2_channel_ok.loc[[x[0] for x in bearish_p2_ch_list]] = [x[1] for x in bearish_p2_ch_list]
+        bearish_channel_break_ok.loc[[x[0] for x in bearish_ch_br_list]] = [x[1] for x in bearish_ch_br_list]
+
+    if bearish_list:
+        idxs = [d["idx"] for d in bearish_list]
+        bearish.loc[idxs] = True
+        bearish_pivot1_idx.loc[idxs] = [d["p1_idx"] for d in bearish_list]
+        bearish_pivot2_idx.loc[idxs] = [d["p2_idx"] for d in bearish_list]
+        bearish_pivot1_price.loc[idxs] = [d["p1_price"] for d in bearish_list]
+        bearish_pivot2_price.loc[idxs] = [d["p2_price"] for d in bearish_list]
+        bearish_trigger_price.loc[idxs] = [d["trigger_price"] for d in bearish_list]
+        bearish_stop_anchor.loc[idxs] = [d["stop_anchor"] for d in bearish_list]
+        bearish_confirm_idx.loc[idxs] = idxs
+        bearish_confirm_pos.loc[idxs] = [d["confirm_pos"] for d in bearish_list]
 
     return DivergenceResult(
         bullish=bullish,
