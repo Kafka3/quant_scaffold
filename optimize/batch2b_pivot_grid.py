@@ -281,6 +281,46 @@ def build_equivalence(summary_df):
     return pd.DataFrame(rows)
 
 
+def validate_tpe_vs_wide(val_df):
+    """Explicit per-period comparison between candidate_tpe (9/42) and candidate_wide_simple (9/35).
+
+    Appends validation output to the log without changing equivalence.csv format.
+    """
+    print("\n--- Per-Period Equivalence Validation: candidate_tpe (9/42) vs candidate_wide_simple (9/35) ---")
+    for cost_mode in COST_MODES:
+        sub = val_df[val_df["cost_mode"] == cost_mode]
+        tpe = sub[(sub["min_separation"] == 9) & (sub["max_separation"] == 42)].copy()
+        wide = sub[(sub["min_separation"] == 9) & (sub["max_separation"] == 35)].copy()
+        if len(tpe) == 0 or len(wide) == 0:
+            print(f"[{cost_mode}] 缺少 9/42 或 9/35 的逐周期数据，跳过")
+            continue
+
+        tpe = tpe.sort_values("period").reset_index(drop=True)
+        wide = wide.sort_values("period").reset_index(drop=True)
+
+        print(f"\n[{cost_mode}] 季度对比:")
+        header = (
+            f"{'Period':<10} | {'9/35 return':>12} | {'9/42 return':>12} | "
+            f"{'diff':>10} | {'9/35 trades':>11} | {'9/42 trades':>11} | "
+            f"{'9/35 pf':>8} | {'9/42 pf':>8}"
+        )
+        print(header)
+        print("-" * len(header))
+
+        for _, row_t in tpe.iterrows():
+            w_match = wide[wide["period"] == row_t["period"]]
+            if len(w_match) == 0:
+                continue
+            row_w = w_match.iloc[0]
+            diff_ret = row_t["total_return"] - row_w["total_return"]
+            print(
+                f"{row_t['period']:<10} | {row_w['total_return']:>12.4f} | {row_t['total_return']:>12.4f} | "
+                f"{diff_ret:>10.4f} | {row_w['total_trades']:>11} | {row_t['total_trades']:>11} | "
+                f"{row_w['profit_factor']:>8.2f} | {row_t['profit_factor']:>8.2f}"
+            )
+    print("--- End Validation ---\n")
+
+
 # ------------------------------------------------------------------
 # Main
 # ------------------------------------------------------------------
@@ -367,6 +407,9 @@ def main():
 
     # Equivalence analysis
     equiv_df = build_equivalence(summary_df)
+
+    # Explicit validation: candidate_tpe (9/42) vs candidate_wide_simple (9/35)
+    validate_tpe_vs_wide(val_df)
 
     # Save reports
     reports_dir = PROJECT_ROOT / "reports"
