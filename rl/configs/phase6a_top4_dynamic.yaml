@@ -1,0 +1,149 @@
+# Phase 6A — Offline Top-4 Dynamic Controller Config
+# 
+# This config defines action space, feature set, and pipeline parameters.
+# tpe_trial_490.yaml remains the fixed base config.
+# Only the top-4 TPE importance params are dynamically controlled.
+
+# ---------------------------------------------------------------------------
+# Base candidate (fixed — never modified in-place)
+# ---------------------------------------------------------------------------
+candidate: tpe_trial_490
+candidate_path: configs/candidates/tpe_trial_490.yaml
+
+# ---------------------------------------------------------------------------
+# Risk / execution config (fixed, from Phase 5 Pre-Live)
+# ---------------------------------------------------------------------------
+risk:
+  target_risk_per_trade_pct: 0.01
+  max_leverage: 10
+  position_mode: capped_10x
+  margin_mode: isolated
+  max_open_trades: 1
+  min_stop_distance_pct: 0.001
+
+cost:
+  fee_per_trade: 5
+  slippage: 5
+
+# ---------------------------------------------------------------------------
+# Action space
+# Each action overrides the top-4 params on top of the base tpe_trial_490.yaml
+# Non-top-4 params always come from the base config.
+# ---------------------------------------------------------------------------
+actions:
+  skip:
+    name: skip
+    full_name: Skip Trade
+    params: {}  # no override needed, skip signal entirely
+
+  base_tpe490:
+    name: base_tpe490
+    full_name: Base tpe_trial_490
+    params:
+      right_bars: 5
+      rr_target: 3.14
+      min_separation: 15
+      min_close_ratio: 0.5124
+
+  faster_confirm:
+    name: faster_confirm
+    full_name: Faster Confirmation
+    params:
+      right_bars: 3
+      rr_target: 2.4
+      min_separation: 8
+      min_close_ratio: 0.85
+
+  balanced:
+    name: balanced
+    full_name: Balanced
+    params:
+      right_bars: 4
+      rr_target: 2.6
+      min_separation: 10
+      min_close_ratio: 0.85
+
+  quality:
+    name: quality
+    full_name: Quality
+    params:
+      right_bars: 4
+      rr_target: 2.8
+      min_separation: 12
+      min_close_ratio: 0.90
+
+  high_quality_low_freq:
+    name: high_quality_low_freq
+    full_name: High Quality Low Frequency
+    params:
+      right_bars: 5
+      rr_target: 3.0
+      min_separation: 14
+      min_close_ratio: 0.90
+
+# ---------------------------------------------------------------------------
+# Feature config
+# ---------------------------------------------------------------------------
+features:
+  price:
+    - ema_slope
+    - price_position_vs_channel
+    - channel_width
+
+  stochastic:
+    - stoch_d
+    - stoch_slope
+
+  pivot:
+    - prior_trend_ratio
+    - pivot_distance
+    - pivot_price_delta
+    - pivot_stoch_delta
+
+  volatility:
+    - atr_14
+    - atr_pct
+    - volume_zscore
+
+  temporal:
+    - hour_of_day
+    - day_of_week
+
+  recent_performance:
+    - recent_5_trade_avg_r
+    - recent_10_trade_avg_r
+    - recent_5_win_rate
+    - recent_drawdown_pct
+
+# ---------------------------------------------------------------------------
+# Time splits
+# ---------------------------------------------------------------------------
+splits:
+  train_start: "2024-01-01"
+  train_end: "2025-07-01"
+  val_start: "2025-07-01"
+  val_end: "2025-10-01"
+  test_start: "2025-10-01"
+  test_end: "2026-01-01"
+
+# ---------------------------------------------------------------------------
+# Policy config
+# ---------------------------------------------------------------------------
+policy:
+  # Options: always_execute, simple_rule_filter, learned_policy
+  default: learned_policy
+
+  simple_rule_filter:
+    recent_n: 5
+    min_avg_r: 0.0
+
+  learned_policy:
+    model_type: RandomForestClassifier
+    model_params:
+      n_estimators: 100
+      max_depth: 10
+      min_samples_leaf: 5
+      random_state: 42
+    # Train uses all non-test data
+    # Val uses 2025-Q3
+    # Test uses 2025-Q4 (strictly held out)

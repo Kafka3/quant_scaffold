@@ -1,0 +1,17 @@
+feature,importance
+stoch_slope,0.14289226356522344
+hour_of_day,0.1398591092207872
+atr_pct,0.10938059116686882
+channel_width,0.10825299170336064
+above_ratio,0.09260338986668482
+price_position_vs_channel,0.07646197101457361
+day_of_week,0.0731366496240961
+volume_zscore,0.07196802934938978
+ema_slope,0.07092541809957144
+stoch_d,0.047099445762362926
+atr_14,0.045176578584069274
+below_ratio,0.02224356204301196
+recent_5_trade_avg_r,0.0
+recent_10_trade_avg_r,0.0
+recent_5_win_rate,0.0
+recent_drawdown_pct,0.0
