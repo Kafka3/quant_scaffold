@@ -19,6 +19,7 @@ strategy:
     min_close_ratio: 0.80
 
   risk:
+    atr_period: 14
     rr_target: 2.2
     stop_buffer: 0.0
 
