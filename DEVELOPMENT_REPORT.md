@@ -39,9 +39,7 @@
 | `optimize/phase4_risk_sensitivity.py` | 接入共享 utils，小幅重构 |
 | `optimize/validate_candidates.py` | 接入共享 utils，简化指标提取逻辑 |
 | `optimize/validate_final_candidates.py` | 接入共享 utils，简化指标提取逻辑 |
-| `regime/hmm_model.py` | **修复未来函数**：`fit_hmm` + `predict_states` 替换为 `fit_predict_hmm_expanding`，使用 expanding window 逐点训练并预测，避免用未来数据训练 HMM |
-
----
+|
 
 ## 2. 各模块状态
 
@@ -67,12 +65,6 @@
 - **问题 2**：回测引擎不支持仓位数量 `qty`，所有 PnL 固定为 1 单位
 - **修复**：统一键名为 `initial_cash`；新增 `qty` 读取（默认 1.0），所有 long/short 的 exit PnL 均乘以 `qty`
 
-### regime/ 模块：HMM 未来函数修复
-
-- **状态**：✅ 已修复，⚠️ 未集成
-- **问题**：原 `fit_hmm` 在整个特征集上训练后再 `predict_states`，存在**未来函数**（用未来数据训练模型后预测过去状态）
-- **修复**：新增 `fit_predict_hmm_expanding`，对每个时间点 `t`，仅用 `features[:t]` 训练 HMM，再预测 `features[t]` 的状态
-- **未集成**：`strategy/` 和 `backtest/` 模块目前**未引用** regime 相关逻辑（见下方第 4 节）
 
 ### optimize/batch1_stoch_pivot.py：新增脚本和 384 次回测结果
 
@@ -94,10 +86,9 @@
 |---|---------|---------|---------|
 | 1 | `custom_engine.py` 配置键 `init_cash` 与项目标准 `initial_cash` 不一致 | `backtest/custom_engine.py` | 统一改为 `initial_cash` |
 | 2 | `custom_engine.py` 不支持仓位数量调整，PnL 永远按 1 单位计算 | `backtest/custom_engine.py` | 新增 `qty` 参数，所有 PnL 乘以 `qty` |
-| 3 | HMM  regime 检测存在未来函数：全量训练后预测 | `regime/hmm_model.py` | 改为 expanding window 逐点训练预测 |
-| 4 | `profit_factor` 在多个 optimize 脚本中重复处理 None/NaN/inf 边界 | 8 个 optimize 脚本 | 提取到 `optimize/utils.py` 统一处理 |
-| 5 | `divergence.py` pivot 检测使用 Python `for` 循环，性能差 | `features/divergence.py` | 改为 `rolling().max/min` 向量化实现 |
-| 6 | `divergence.py` 循环内逐行 `.loc[]` 写入 Series，触发大量 pandas 开销 | `features/divergence.py` | 改为 list 收集 + 批量 `.loc[]` 赋值 |
+|| 3 | `profit_factor` 在多个 optimize 脚本中重复处理 None/NaN/inf 边界 | 8 个 optimize 脚本 | 提取到 `optimize/utils.py` 统一处理 |
+|| 4 | `divergence.py` pivot 检测使用 Python `for` 循环，性能差 | `features/divergence.py` | 改为 `rolling().max/min` 向量化实现 |
+|| 5 | `divergence.py` 循环内逐行 `.loc[]` 写入 Series，触发大量 pandas 开销 | `features/divergence.py` | 改为 list 收集 + 批量 `.loc[]` 赋值 |
 
 ---
 
@@ -125,24 +116,15 @@ tests/test_smoke.py::test_bearish_divergence_requires_prior_downtrend_and_progre
   - `env.py`：`ParameterSwitchEnv` 为 toy env，observation 恒为 0 或随机数，reward 随机
   - `reward.py`：仅一行公式，未接入实际回测
   - `train_sb3.py`：仅跑 1000 步 smoke test，无实际策略参数切换逻辑
-- **建议**：需要接入 regime 特征、回测 PnL、实际参数 bucket 后才具备训练价值
+- **建议**：需要接入实际回测 PnL、实际参数 bucket 后才具备训练价值
 
-### 4.3 Regime 未集成
-
-- **现状**：`regime/` 模块包含 `hmm_model.py`（修复后）和 `regime_filter.py`，但：
-  - `strategy/signal_builder.py` **未引用** regime
-  - `backtest/` 各引擎 **未引用** regime
-  - `main.py` **未引用** regime
-- **影响**：HMM 修复后仍无法对策略信号产生实际过滤作用
-- **建议**：在 `signal_builder.build_signals()` 或回测入口中增加 regime 判断步骤，调用 `apply_allowed_regimes()` 对 signal 进行过滤
-
----
+### 4.2 RL 占位符
 
 ## 5. Git 提交历史
 
 ```
 abbce6f (HEAD -> main, origin/main) perf: vectorize pivot detection and batch Series writes in divergence.py
-f2ca070 refactor: extract optimize/utils.py for shared helpers; add batch1 stoch pivot + phase4b position cap analysis; update HMM model and custom engine qty support
+f2ca070 refactor: extract optimize/utils.py for shared helpers; add batch1 stoch pivot + phase4b position cap analysis; fix custom engine qty support
 b5c9920 chore: remove large data files from git tracking (keep local)
 2c47629 feat: Phase 4 risk sensitivity with dual position modes, actual risk tracking, and cost model
 93181ea feat: Phase 3C parameter plateau analysis with parallelization and cost reports

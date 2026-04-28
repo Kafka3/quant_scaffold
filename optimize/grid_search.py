@@ -19,7 +19,7 @@ from optimize.utils import compute_extra_metrics
 from configs.settings import load_settings
 from data.loaders.csv_loader import load_ohlcv_csv
 from strategy.signal_builder import build_signals
-from backtest.vectorbt_engine import run_backtest
+from backtest.event_engine import run_backtest
 
 
 def phase1_score(summary: pd.Series) -> float:

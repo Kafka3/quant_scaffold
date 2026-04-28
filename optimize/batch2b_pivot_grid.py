@@ -30,7 +30,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from optimize.utils import safe_profit_factor, slice_dataframe, compute_extra_metrics
 from data.loaders.csv_loader import load_ohlcv_csv
 from strategy.signal_builder import build_signals
-from backtest.vectorbt_engine import run_backtest
+from backtest.event_engine import run_backtest
 
 # ------------------------------------------------------------------
 # Constants

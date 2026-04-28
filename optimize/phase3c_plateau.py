@@ -28,7 +28,7 @@ from joblib import Parallel, delayed
 
 from data.loaders.csv_loader import load_ohlcv_csv
 from strategy.signal_builder import build_signals
-from backtest.vectorbt_engine import run_backtest
+from backtest.event_engine import run_backtest
 
 
 PERIODS = [
@@ -129,7 +129,7 @@ def _run_one_combo(combo, df_periods, cost_overrides, total_runs):
 
     import pandas as pd
     from strategy.signal_builder import build_signals
-    from backtest.vectorbt_engine import run_backtest
+    from backtest.event_engine import run_backtest
 
     ema_period, lookback_bars, min_close_ratio, left_bars, right_bars, rr_target = combo
     param_combo = {

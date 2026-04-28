@@ -7,7 +7,7 @@ class ParameterSwitchEnv(gym.Env):
     """A minimal RL env where actions select one of several predefined parameter sets.
 
     This is only a placeholder. The recommended real design is:
-    - observation: regime, volatility, trend strength, recent pnl, drawdown
+    - observation: volatility, trend strength, recent pnl, drawdown
     - action: choose parameter bucket / disable strategy / reduce risk
     - reward: risk-adjusted pnl after costs
     """

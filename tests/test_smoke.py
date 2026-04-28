@@ -12,7 +12,7 @@ import tempfile
 import os
 
 from strategy.signal_builder import build_signals, SignalBundle
-from backtest.vectorbt_engine import run_backtest
+from backtest.event_engine import run_backtest
 from data.loaders.csv_loader import load_ohlcv_csv
 
 
@@ -147,12 +147,6 @@ def test_end_of_data_liquidation_updates_equity():
         long_trigger_price_raw=pd.Series([100.0, pd.NA, pd.NA, pd.NA], index=idx),
         short_trigger_price_raw=na_float,
         features=pd.DataFrame(index=idx),
-        entry_prices_long=na_float,
-        entry_prices_short=na_float,
-        stop_prices_long=na_float,
-        stop_prices_short=na_float,
-        target_prices_long=na_float,
-        target_prices_short=na_float,
     )
 
     config = {"initial_cash": 100000, "fee_per_trade": 0.0, "slippage": 0.0, "allow_short": True}

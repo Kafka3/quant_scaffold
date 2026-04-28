@@ -11,7 +11,6 @@
 
 - [ ] 不改 `robust_ema55` 主配置
 - [ ] 不接入 RL
-- [ ] 不接入 HMM/Regime
 - [ ] 不改策略逻辑
 - [ ] 不改背离 / entry / stop / target
 - [ ] 不做 Optuna

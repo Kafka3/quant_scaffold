@@ -144,9 +144,9 @@ def detect_regular_divergence(
                     confirm_idx = df.index[confirm_pos]
 
                     # Progressive channel checks for bullish continuation.
-                    p1_ch_ok = bool(trend["inside_or_below_high"].loc[idx1])
-                    p2_ch_ok = bool(trend["below_channel"].loc[idx2])
-                    prior_ok = bool(trend["prior_uptrend"].loc[idx1])
+                    p1_ch_ok = bool(trend["inside_or_below_high"].iloc[pos1])
+                    p2_ch_ok = bool(trend["below_channel"].iloc[pos2])
+                    prior_ok = bool(trend["prior_uptrend"].iloc[pos1])
                     channel_ok = p1_ch_ok and p2_ch_ok
 
                     bullish_raw_list.append(confirm_idx)
@@ -206,9 +206,9 @@ def detect_regular_divergence(
                     confirm_idx = df.index[confirm_pos]
 
                     # Progressive channel checks for bearish continuation.
-                    p1_ch_ok = bool(trend["inside_or_above_low"].loc[idx1])
-                    p2_ch_ok = bool(trend["above_channel"].loc[idx2])
-                    prior_ok = bool(trend["prior_downtrend"].loc[idx1])
+                    p1_ch_ok = bool(trend["inside_or_above_low"].iloc[pos1])
+                    p2_ch_ok = bool(trend["above_channel"].iloc[pos2])
+                    prior_ok = bool(trend["prior_downtrend"].iloc[pos1])
                     channel_ok = p1_ch_ok and p2_ch_ok
 
                     bearish_raw_list.append(confirm_idx)

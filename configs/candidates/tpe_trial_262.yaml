@@ -1,0 +1,38 @@
+data:
+  path: data/raw/BTCUSDT_5m_2024.csv
+
+strategy:
+  stochastic:
+    k_period: 16
+    d_period: 5
+    smooth: 3
+    oversold: 14
+    overbought: 82
+
+  pivots:
+    left_bars: 6
+    right_bars: 5
+    min_separation: 15
+    max_separation: 30
+    strict: true
+
+  trend:
+    ema_period: 77
+    lookback_bars: 24
+    min_close_ratio: 0.687832011474867
+
+  risk:
+    atr_period: 14
+    stop_buffer: 0.0
+    rr_target: 3.4312012328416728
+
+  setup:
+    setup_max_bars: 12
+    replace_same_side_setup: true
+    invalidate_on_stop_anchor_break: true
+
+backtest:
+  initial_cash: 100000
+  fee_per_trade: 0.0
+  slippage: 0.0
+  allow_short: true

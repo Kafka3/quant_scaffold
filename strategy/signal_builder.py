@@ -40,13 +40,6 @@ class SignalBundle:
     long_trigger_price_raw: pd.Series
     short_trigger_price_raw: pd.Series
     features: pd.DataFrame
-    # backward-compatible aliases
-    entry_prices_long: pd.Series
-    entry_prices_short: pd.Series
-    stop_prices_long: pd.Series
-    stop_prices_short: pd.Series
-    target_prices_long: pd.Series
-    target_prices_short: pd.Series
 
 
 def build_signals(df: pd.DataFrame, config: dict) -> SignalBundle:
@@ -232,14 +225,6 @@ def build_signals(df: pd.DataFrame, config: dict) -> SignalBundle:
         bullish_setup_confirm_time.append(pending_long.setup_time if pending_long is not None else pd.NA)
         bearish_setup_confirm_time.append(pending_short.setup_time if pending_short is not None else pd.NA)
 
-    # Backward-compatible alias fields for existing custom backtest code.
-    entry_prices_long = long_entry_price
-    entry_prices_short = short_entry_price
-    stop_prices_long = long_stop_price
-    stop_prices_short = short_stop_price
-    target_prices_long = long_target_price
-    target_prices_short = short_target_price
-
     features = pd.DataFrame(
         {
             "Close": df["Close"],
@@ -317,10 +302,4 @@ def build_signals(df: pd.DataFrame, config: dict) -> SignalBundle:
         long_trigger_price_raw=long_trigger_price_raw,
         short_trigger_price_raw=short_trigger_price_raw,
         features=features,
-        entry_prices_long=entry_prices_long,
-        entry_prices_short=entry_prices_short,
-        stop_prices_long=stop_prices_long,
-        stop_prices_short=stop_prices_short,
-        target_prices_long=target_prices_long,
-        target_prices_short=target_prices_short,
     )

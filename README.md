@@ -6,8 +6,6 @@ A starter research scaffold for a divergence + trend strategy pipeline:
 - Optuna + TPE (fine tuning)
 - Walk-forward validation
 - Parameter plateau analysis
-- HMM / regime filtering
-- RL for dynamic parameter/risk switching (last stage)
 
 ## Suggested flow
 
@@ -18,8 +16,6 @@ A starter research scaffold for a divergence + trend strategy pipeline:
 5. Run coarse search from `optimize/grid_search.py`.
 6. Run fine search from `optimize/optuna_search.py`.
 7. Run rolling validation from `optimize/walk_forward.py`.
-8. Add regime labels from `regime/`.
-9. Only after the above is stable, test RL in `rl/`.
 
 ## Design principles
 
@@ -44,11 +40,10 @@ python main.py
 - `features/trend_filter.py`: trend / EMA channel filters
 - `strategy/signal_builder.py`: unify all conditions into signals
 - `strategy/risk_model.py`: stop, target, position sizing
-- `backtest/vectorbt_engine.py`: vectorbt-based backtest entry point
+- `backtest/event_engine.py`: vectorbt-based backtest entry point
 - `optimize/grid_search.py`: coarse parameter sweep
 - `optimize/optuna_search.py`: fine tuning with Optuna
 - `optimize/walk_forward.py`: rolling train/test validation
-- `regime/hmm_model.py`: HMM training and prediction
 - `rl/env.py`: Gymnasium environment for dynamic parameter switching
 
 ## Recommended next step

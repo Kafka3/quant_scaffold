@@ -6,7 +6,7 @@ import pandas as pd
 
 from data.loaders.csv_loader import load_ohlcv_csv
 from strategy.signal_builder import build_signals
-from backtest.vectorbt_engine import run_backtest
+from backtest.event_engine import run_backtest
 from configs.settings import load_settings
 
 

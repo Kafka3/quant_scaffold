@@ -29,7 +29,7 @@ import yaml
 
 from data.loaders.csv_loader import load_ohlcv_csv
 from strategy.signal_builder import build_signals
-from backtest.vectorbt_engine import run_backtest_with_position_sizing_and_costs
+from backtest.event_engine import run_backtest_with_position_sizing_and_costs
 
 
 PERIODS = [

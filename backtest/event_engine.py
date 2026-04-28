@@ -14,6 +14,119 @@ class BacktestResult:
     warnings: List[str]
 
 
+def _run_event_driven_loop(
+    df: pd.DataFrame,
+    bundle: SignalBundle,
+    allow_short: bool,
+    initial_cash: float,
+    *,
+    try_enter: callable,
+    finalize_exit: callable,
+    finalize_eod: callable,
+    compute_equity: callable,
+    skipped: Optional[list] = None,
+) -> Tuple[List[dict], List[float], List[str]]:
+    """
+    Shared event-driven loop used by both run_backtest and
+    run_backtest_with_position_sizing_and_costs.
+
+    Callbacks:
+      - try_enter(idx, side, cash) -> (trade_dict, skip_info)
+          trade_dict is None if no entry; skip_info is None unless skipped.
+      - finalize_exit(trade, idx, exit_price_raw, exit_reason, cash) -> new_cash
+      - finalize_eod(trade, last_idx, last_close, cash) -> new_cash
+      - compute_equity(position, current_trade, cash, close) -> float
+    """
+    cash = initial_cash
+    position: str = "flat"
+    current_trade: Optional[dict] = None
+    equity_values: List[float] = []
+    trades: List[dict] = []
+    warnings: List[str] = []
+
+    for idx in df.index:
+        high = float(df.loc[idx, "High"])
+        low = float(df.loc[idx, "Low"])
+        close = float(df.loc[idx, "Close"])
+        bar_entered = False
+
+        # ------------------------------------------------------------------
+        # 1. Entry logic: only when flat
+        # ------------------------------------------------------------------
+        if position == "flat":
+            long_entry = bool(bundle.entries_long.loc[idx])
+            short_entry = bool(bundle.entries_short.loc[idx]) and allow_short
+
+            if long_entry and short_entry:
+                warnings.append(f"ambiguous long/short entry on {idx}, skip this bar")
+            elif long_entry:
+                trade, skip_info = try_enter(idx, "long", cash)
+                if skip_info is not None and skipped is not None:
+                    skipped.append(skip_info)
+                if trade is not None:
+                    current_trade = trade
+                    position = "long"
+                    bar_entered = True
+            elif short_entry:
+                trade, skip_info = try_enter(idx, "short", cash)
+                if skip_info is not None and skipped is not None:
+                    skipped.append(skip_info)
+                if trade is not None:
+                    current_trade = trade
+                    position = "short"
+                    bar_entered = True
+
+        # ------------------------------------------------------------------
+        # 2. Same-bar exit check (immediately after entry)
+        #    Priority: stop > target
+        # ------------------------------------------------------------------
+        if bar_entered and current_trade is not None:
+            exit_price_raw, exit_reason = _check_exit(current_trade, high, low)
+            if exit_price_raw is not None:
+                cash = finalize_exit(current_trade, idx, exit_price_raw, exit_reason, cash)
+                trades.append(current_trade)
+                current_trade = None
+                position = "flat"
+
+        # ------------------------------------------------------------------
+        # 3. Subsequent-bar exit check
+        #    Priority: stop > target
+        # ------------------------------------------------------------------
+        if not bar_entered and current_trade is not None:
+            exit_price_raw, exit_reason = _check_exit(current_trade, high, low)
+            if exit_price_raw is not None:
+                cash = finalize_exit(current_trade, idx, exit_price_raw, exit_reason, cash)
+                trades.append(current_trade)
+                current_trade = None
+                position = "flat"
+
+        # ------------------------------------------------------------------
+        # 4. bars_held counting (entry bar itself is NOT counted)
+        # ------------------------------------------------------------------
+        if current_trade is not None and idx != current_trade["entry_time"]:
+            current_trade["bars_held"] += 1
+
+        # ------------------------------------------------------------------
+        # 5. Mark-to-market equity (using raw close, no slippage)
+        # ------------------------------------------------------------------
+        equity_values.append(compute_equity(position, current_trade, cash, close))
+
+    # ------------------------------------------------------------------
+    # 6. End-of-data forced liquidation
+    # ------------------------------------------------------------------
+    if current_trade is not None:
+        last_close = float(df["Close"].iloc[-1])
+        last_idx = df.index[-1]
+        cash = finalize_eod(current_trade, last_idx, last_close, cash)
+        trades.append(current_trade)
+        current_trade = None
+        position = "flat"
+        if equity_values:
+            equity_values[-1] = cash
+
+    return trades, equity_values, warnings
+
+
 def run_backtest(df: pd.DataFrame, bundle: SignalBundle, config: dict) -> BacktestResult:
     """
     Custom event-driven backtester.
@@ -30,15 +143,75 @@ def run_backtest(df: pd.DataFrame, bundle: SignalBundle, config: dict) -> Backte
     fee_per_trade = float(config.get("fee_per_trade", 0.0))
     slippage = float(config.get("slippage", 0.0))
     allow_short = bool(config.get("allow_short", True))
-    cash = initial_cash
-    position: str = "flat"
-    current_trade: Optional[dict] = None
 
-    equity_values: List[float] = []
-    trades: List[dict] = []
-    warnings: List[str] = []
+    def try_enter(idx, side, cash):
+        if side == "long":
+            entry_price_raw = bundle.long_entry_price.loc[idx]
+            stop_price = bundle.long_stop_price.loc[idx]
+            target_price = bundle.long_target_price.loc[idx]
+            if pd.notna(entry_price_raw) and pd.notna(stop_price) and pd.notna(target_price):
+                entry_price = float(entry_price_raw) + slippage
+                return {
+                    "entry_time": idx,
+                    "side": "long",
+                    "entry_price": entry_price,
+                    "stop_price": float(stop_price),
+                    "target_price": float(target_price),
+                    "setup_pivot2_time": bundle.long_setup_pivot2_time.loc[idx],
+                    "setup_confirm_time": bundle.long_setup_confirm_time.loc[idx],
+                    "trigger_price": bundle.long_trigger_price_raw.loc[idx],
+                    "bars_held": 0,
+                }, None
+        else:  # short
+            entry_price_raw = bundle.short_entry_price.loc[idx]
+            stop_price = bundle.short_stop_price.loc[idx]
+            target_price = bundle.short_target_price.loc[idx]
+            if pd.notna(entry_price_raw) and pd.notna(stop_price) and pd.notna(target_price):
+                entry_price = float(entry_price_raw) - slippage
+                return {
+                    "entry_time": idx,
+                    "side": "short",
+                    "entry_price": entry_price,
+                    "stop_price": float(stop_price),
+                    "target_price": float(target_price),
+                    "setup_pivot2_time": bundle.short_setup_pivot2_time.loc[idx],
+                    "setup_confirm_time": bundle.short_setup_confirm_time.loc[idx],
+                    "trigger_price": bundle.short_trigger_price_raw.loc[idx],
+                    "bars_held": 0,
+                }, None
+        return None, None
 
-    # Pre-defined columns so 0-trade DataFrame stays structurally stable.
+    def finalize_exit(trade, idx, exit_price_raw, exit_reason, cash):
+        exit_price = exit_price_raw - slippage if trade["side"] == "long" else exit_price_raw + slippage
+        pnl = _finalize_trade(trade, idx, exit_price, exit_reason, fee_per_trade)
+        return cash + pnl
+
+    def finalize_eod(trade, last_idx, last_close, cash):
+        exit_price = last_close - slippage if trade["side"] == "long" else last_close + slippage
+        pnl = _finalize_trade(trade, last_idx, exit_price, "end_of_data", fee_per_trade)
+        return cash + pnl
+
+    def compute_equity(position, current_trade, cash, close):
+        if position == "flat" or current_trade is None:
+            return cash
+        elif position == "long":
+            return cash + (close - current_trade["entry_price"])
+        else:  # short
+            return cash + (current_trade["entry_price"] - close)
+
+    trades, equity_values, warnings = _run_event_driven_loop(
+        df, bundle, allow_short, initial_cash,
+        try_enter=try_enter,
+        finalize_exit=finalize_exit,
+        finalize_eod=finalize_eod,
+        compute_equity=compute_equity,
+    )
+
+    # ------------------------------------------------------------------
+    # Assemble results
+    # ------------------------------------------------------------------
+    equity = pd.Series(equity_values, index=df.index)
+
     trade_columns = [
         "entry_time",
         "exit_time",
@@ -56,132 +229,8 @@ def run_backtest(df: pd.DataFrame, bundle: SignalBundle, config: dict) -> Backte
         "bars_held",
     ]
 
-    for idx in df.index:
-        high = float(df.loc[idx, "High"])
-        low = float(df.loc[idx, "Low"])
-        close = float(df.loc[idx, "Close"])
-
-        bar_entered = False
-
-        # ------------------------------------------------------------------
-        # 1. Entry logic: only when flat
-        # ------------------------------------------------------------------
-        if position == "flat":
-            long_entry = bool(bundle.entries_long.loc[idx])
-            short_entry = bool(bundle.entries_short.loc[idx]) and allow_short
-
-            if long_entry and short_entry:
-                warnings.append(f"ambiguous long/short entry on {idx}, skip this bar")
-            elif long_entry:
-                entry_price_raw = bundle.long_entry_price.loc[idx]
-                stop_price = bundle.long_stop_price.loc[idx]
-                target_price = bundle.long_target_price.loc[idx]
-                if pd.notna(entry_price_raw) and pd.notna(stop_price) and pd.notna(target_price):
-                    position = "long"
-                    entry_price = float(entry_price_raw) + slippage
-                    current_trade = {
-                        "entry_time": idx,
-                        "side": "long",
-                        "entry_price": entry_price,
-                        "stop_price": float(stop_price),
-                        "target_price": float(target_price),
-                        "setup_pivot2_time": bundle.long_setup_pivot2_time.loc[idx],
-                        "setup_confirm_time": bundle.long_setup_confirm_time.loc[idx],
-                        "trigger_price": bundle.long_trigger_price_raw.loc[idx],
-                        "bars_held": 0,
-                    }
-                    bar_entered = True
-            elif short_entry:
-                entry_price_raw = bundle.short_entry_price.loc[idx]
-                stop_price = bundle.short_stop_price.loc[idx]
-                target_price = bundle.short_target_price.loc[idx]
-                if pd.notna(entry_price_raw) and pd.notna(stop_price) and pd.notna(target_price):
-                    position = "short"
-                    entry_price = float(entry_price_raw) - slippage
-                    current_trade = {
-                        "entry_time": idx,
-                        "side": "short",
-                        "entry_price": entry_price,
-                        "stop_price": float(stop_price),
-                        "target_price": float(target_price),
-                        "setup_pivot2_time": bundle.short_setup_pivot2_time.loc[idx],
-                        "setup_confirm_time": bundle.short_setup_confirm_time.loc[idx],
-                        "trigger_price": bundle.short_trigger_price_raw.loc[idx],
-                        "bars_held": 0,
-                    }
-                    bar_entered = True
-
-        # ------------------------------------------------------------------
-        # 2. Same-bar exit check (immediately after entry)
-        #    Priority: stop > target
-        # ------------------------------------------------------------------
-        if bar_entered and current_trade is not None:
-            exit_price_raw, exit_reason = _check_exit(current_trade, high, low)
-            if exit_price_raw is not None:
-                exit_price = exit_price_raw - slippage if current_trade["side"] == "long" else exit_price_raw + slippage
-                pnl = _finalize_trade(current_trade, idx, exit_price, exit_reason, fee_per_trade)
-                cash += pnl
-                trades.append(current_trade)
-                current_trade = None
-                position = "flat"
-
-        # ------------------------------------------------------------------
-        # 3. Subsequent-bar exit check
-        #    Priority: stop > target
-        # ------------------------------------------------------------------
-        if not bar_entered and current_trade is not None:
-            exit_price_raw, exit_reason = _check_exit(current_trade, high, low)
-            if exit_price_raw is not None:
-                exit_price = exit_price_raw - slippage if current_trade["side"] == "long" else exit_price_raw + slippage
-                pnl = _finalize_trade(current_trade, idx, exit_price, exit_reason, fee_per_trade)
-                cash += pnl
-                trades.append(current_trade)
-                current_trade = None
-                position = "flat"
-
-        # ------------------------------------------------------------------
-        # 4. bars_held counting (entry bar itself is NOT counted)
-        # ------------------------------------------------------------------
-        if current_trade is not None and idx != current_trade["entry_time"]:
-            current_trade["bars_held"] += 1
-
-        # ------------------------------------------------------------------
-        # 5. Mark-to-market equity (using raw close, no slippage)
-        # ------------------------------------------------------------------
-        if position == "flat" or current_trade is None:
-            equity_values.append(cash)
-        elif position == "long":
-            equity_values.append(cash + (close - current_trade["entry_price"]))
-        else:  # short
-            equity_values.append(cash + (current_trade["entry_price"] - close))
-
-    # ------------------------------------------------------------------
-    # 6. End-of-data forced liquidation
-    # ------------------------------------------------------------------
-    if current_trade is not None:
-        last_close = float(df["Close"].iloc[-1])
-        last_idx = df.index[-1]
-        if current_trade["side"] == "long":
-            exit_price = last_close - slippage
-        else:
-            exit_price = last_close + slippage
-        pnl = _finalize_trade(current_trade, last_idx, exit_price, "end_of_data", fee_per_trade)
-        cash += pnl
-        trades.append(current_trade)
-        current_trade = None
-        position = "flat"
-        # Sync final equity point to realized cash after forced liquidation.
-        if equity_values:
-            equity_values[-1] = cash
-
-    # ------------------------------------------------------------------
-    # Assemble results
-    # ------------------------------------------------------------------
-    equity = pd.Series(equity_values, index=df.index)
-
     if trades:
         trades_df = pd.DataFrame(trades)
-        # Reorder columns to the canonical list; ignore any missing (defensive).
         trades_df = trades_df[[c for c in trade_columns if c in trades_df.columns]]
     else:
         trades_df = pd.DataFrame(columns=trade_columns)
@@ -367,14 +416,101 @@ def run_backtest_with_position_sizing_and_costs(
     timeframe_minutes = int(metrics_cfg.get("timeframe_minutes", 5))
     risk_free_rate_annual = float(metrics_cfg.get("risk_free_rate_annual", 0.0))
 
-    cash = initial_cash
-    position: str = "flat"
-    current_trade: Optional[Dict[str, Any]] = None
-
-    equity_values: List[float] = []
-    trades: List[dict] = []
     skipped: List[dict] = []
-    warnings: List[str] = []
+
+    def try_enter(idx, side, cash):
+        if side == "long":
+            entry_price_raw = float(bundle.long_entry_price.loc[idx])
+            stop_price = float(bundle.long_stop_price.loc[idx])
+            target_price = float(bundle.long_target_price.loc[idx])
+        else:  # short
+            entry_price_raw = float(bundle.short_entry_price.loc[idx])
+            stop_price = float(bundle.short_stop_price.loc[idx])
+            target_price = float(bundle.short_target_price.loc[idx])
+
+        if pd.notna(entry_price_raw) and pd.notna(stop_price) and pd.notna(target_price):
+            sizing = calculate_position_size(
+                equity=cash,
+                entry_price=entry_price_raw,
+                stop_price=stop_price,
+                risk_per_trade_pct=risk_per_trade_pct,
+                max_position_value_pct=max_position_value_pct,
+                max_leverage=max_leverage,
+                min_qty=min_qty,
+                qty_step=qty_step,
+            )
+            if sizing["skip_trade"]:
+                return None, {
+                    "time": idx,
+                    "side": side,
+                    "entry_price": entry_price_raw,
+                    "stop_price": stop_price,
+                    "skip_reason": sizing["skip_reason"],
+                    "equity": cash,
+                    "risk_per_trade_pct": risk_per_trade_pct,
+                    "position_mode": position_mode,
+                }
+            else:
+                entry_filled = apply_slippage(entry_price_raw, side, "entry", slippage)
+                return {
+                    "entry_time": idx,
+                    "side": side,
+                    "entry_price_raw": entry_price_raw,
+                    "entry_price_filled": entry_filled,
+                    "stop_price": stop_price,
+                    "target_price": target_price,
+                    "qty": sizing["qty"],
+                    "notional": sizing["notional"],
+                    "target_risk_amount": sizing["target_risk_amount"],
+                    "actual_risk_amount": sizing["actual_risk_amount"],
+                    "target_risk_pct": sizing["target_risk_pct"],
+                    "actual_risk_pct": sizing["actual_risk_pct"],
+                    "stop_distance": sizing["stop_distance"],
+                    "raw_qty": sizing["raw_qty"],
+                    "max_qty": sizing["max_qty"],
+                    "cap_hit": sizing["cap_hit"],
+                    "equity_before": cash,
+                    "bars_held": 0,
+                }, None
+        return None, None
+
+    def finalize_exit(trade, idx, exit_price_raw, exit_reason, cash):
+        _finalize_trade_ps(
+            trade, idx, exit_price_raw, exit_reason,
+            slippage, fee_rate, fixed_fee_per_trade,
+        )
+        return trade["equity_after"]
+
+    def finalize_eod(trade, last_idx, last_close, cash):
+        _finalize_trade_ps(
+            trade, last_idx, last_close, "end_of_data",
+            slippage, fee_rate, fixed_fee_per_trade,
+        )
+        return trade["equity_after"]
+
+    def compute_equity(position, current_trade, cash, close):
+        if position == "flat" or current_trade is None:
+            return cash
+        elif position == "long":
+            unrealized = (close - current_trade["entry_price_filled"]) * current_trade["qty"]
+            return cash + unrealized
+        else:  # short
+            unrealized = (current_trade["entry_price_filled"] - close) * current_trade["qty"]
+            return cash + unrealized
+
+    trades, equity_values, warnings = _run_event_driven_loop(
+        df, bundle, allow_short, initial_cash,
+        try_enter=try_enter,
+        finalize_exit=finalize_exit,
+        finalize_eod=finalize_eod,
+        compute_equity=compute_equity,
+        skipped=skipped,
+    )
+
+    # ------------------------------------------------------------------
+    # Assemble results
+    # ------------------------------------------------------------------
+    equity = pd.Series(equity_values, index=df.index)
 
     trade_columns = [
         "entry_time", "exit_time", "side",
@@ -394,196 +530,6 @@ def run_backtest_with_position_sizing_and_costs(
         "time", "side", "entry_price", "stop_price",
         "skip_reason", "equity", "risk_per_trade_pct", "position_mode",
     ]
-
-    for idx in df.index:
-        high = float(df.loc[idx, "High"])
-        low = float(df.loc[idx, "Low"])
-        close = float(df.loc[idx, "Close"])
-
-        bar_entered = False
-
-        # ------------------------------------------------------------------
-        # 1. Entry logic: only when flat
-        # ------------------------------------------------------------------
-        if position == "flat":
-            long_entry = bool(bundle.entries_long.loc[idx])
-            short_entry = bool(bundle.entries_short.loc[idx]) and allow_short
-
-            if long_entry and short_entry:
-                warnings.append(f"ambiguous long/short entry on {idx}, skip this bar")
-            elif long_entry:
-                entry_price_raw = float(bundle.long_entry_price.loc[idx])
-                stop_price = float(bundle.long_stop_price.loc[idx])
-                target_price = float(bundle.long_target_price.loc[idx])
-
-                if pd.notna(entry_price_raw) and pd.notna(stop_price) and pd.notna(target_price):
-                    sizing = calculate_position_size(
-                        equity=cash,
-                        entry_price=entry_price_raw,
-                        stop_price=stop_price,
-                        risk_per_trade_pct=risk_per_trade_pct,
-                        max_position_value_pct=max_position_value_pct,
-                        max_leverage=max_leverage,
-                        min_qty=min_qty,
-                        qty_step=qty_step,
-                    )
-                    if sizing["skip_trade"]:
-                        skipped.append({
-                            "time": idx,
-                            "side": "long",
-                            "entry_price": entry_price_raw,
-                            "stop_price": stop_price,
-                            "skip_reason": sizing["skip_reason"],
-                            "equity": cash,
-                            "risk_per_trade_pct": risk_per_trade_pct,
-                            "position_mode": position_mode,
-                        })
-                    else:
-                        entry_filled = apply_slippage(entry_price_raw, "long", "entry", slippage)
-                        position = "long"
-                        current_trade = {
-                            "entry_time": idx,
-                            "side": "long",
-                            "entry_price_raw": entry_price_raw,
-                            "entry_price_filled": entry_filled,
-                            "stop_price": stop_price,
-                            "target_price": target_price,
-                            "qty": sizing["qty"],
-                            "notional": sizing["notional"],
-                            "target_risk_amount": sizing["target_risk_amount"],
-                            "actual_risk_amount": sizing["actual_risk_amount"],
-                            "target_risk_pct": sizing["target_risk_pct"],
-                            "actual_risk_pct": sizing["actual_risk_pct"],
-                            "stop_distance": sizing["stop_distance"],
-                            "raw_qty": sizing["raw_qty"],
-                            "max_qty": sizing["max_qty"],
-                            "cap_hit": sizing["cap_hit"],
-                            "equity_before": cash,
-                            "bars_held": 0,
-                        }
-                        bar_entered = True
-
-            elif short_entry:
-                entry_price_raw = float(bundle.short_entry_price.loc[idx])
-                stop_price = float(bundle.short_stop_price.loc[idx])
-                target_price = float(bundle.short_target_price.loc[idx])
-
-                if pd.notna(entry_price_raw) and pd.notna(stop_price) and pd.notna(target_price):
-                    sizing = calculate_position_size(
-                        equity=cash,
-                        entry_price=entry_price_raw,
-                        stop_price=stop_price,
-                        risk_per_trade_pct=risk_per_trade_pct,
-                        max_position_value_pct=max_position_value_pct,
-                        max_leverage=max_leverage,
-                        min_qty=min_qty,
-                        qty_step=qty_step,
-                    )
-                    if sizing["skip_trade"]:
-                        skipped.append({
-                            "time": idx,
-                            "side": "short",
-                            "entry_price": entry_price_raw,
-                            "stop_price": stop_price,
-                            "skip_reason": sizing["skip_reason"],
-                            "equity": cash,
-                            "risk_per_trade_pct": risk_per_trade_pct,
-                            "position_mode": position_mode,
-                        })
-                    else:
-                        entry_filled = apply_slippage(entry_price_raw, "short", "entry", slippage)
-                        position = "short"
-                        current_trade = {
-                            "entry_time": idx,
-                            "side": "short",
-                            "entry_price_raw": entry_price_raw,
-                            "entry_price_filled": entry_filled,
-                            "stop_price": stop_price,
-                            "target_price": target_price,
-                            "qty": sizing["qty"],
-                            "notional": sizing["notional"],
-                            "target_risk_amount": sizing["target_risk_amount"],
-                            "actual_risk_amount": sizing["actual_risk_amount"],
-                            "target_risk_pct": sizing["target_risk_pct"],
-                            "actual_risk_pct": sizing["actual_risk_pct"],
-                            "stop_distance": sizing["stop_distance"],
-                            "raw_qty": sizing["raw_qty"],
-                            "max_qty": sizing["max_qty"],
-                            "cap_hit": sizing["cap_hit"],
-                            "equity_before": cash,
-                            "bars_held": 0,
-                        }
-                        bar_entered = True
-
-        # ------------------------------------------------------------------
-        # 2. Same-bar exit check
-        # ------------------------------------------------------------------
-        if bar_entered and current_trade is not None:
-            exit_price_raw, exit_reason = _check_exit_ps(current_trade, high, low)
-            if exit_price_raw is not None:
-                _finalize_trade_ps(
-                    current_trade, idx, exit_price_raw, exit_reason,
-                    slippage, fee_rate, fixed_fee_per_trade,
-                )
-                cash = current_trade["equity_after"]
-                trades.append(current_trade)
-                current_trade = None
-                position = "flat"
-
-        # ------------------------------------------------------------------
-        # 3. Subsequent-bar exit check
-        # ------------------------------------------------------------------
-        if not bar_entered and current_trade is not None:
-            exit_price_raw, exit_reason = _check_exit_ps(current_trade, high, low)
-            if exit_price_raw is not None:
-                _finalize_trade_ps(
-                    current_trade, idx, exit_price_raw, exit_reason,
-                    slippage, fee_rate, fixed_fee_per_trade,
-                )
-                cash = current_trade["equity_after"]
-                trades.append(current_trade)
-                current_trade = None
-                position = "flat"
-
-        # ------------------------------------------------------------------
-        # 4. bars_held counting
-        # ------------------------------------------------------------------
-        if current_trade is not None and idx != current_trade["entry_time"]:
-            current_trade["bars_held"] += 1
-
-        # ------------------------------------------------------------------
-        # 5. Mark-to-market equity
-        # ------------------------------------------------------------------
-        if position == "flat" or current_trade is None:
-            equity_values.append(cash)
-        elif position == "long":
-            unrealized = (close - current_trade["entry_price_filled"]) * current_trade["qty"]
-            equity_values.append(cash + unrealized)
-        else:  # short
-            unrealized = (current_trade["entry_price_filled"] - close) * current_trade["qty"]
-            equity_values.append(cash + unrealized)
-
-    # ------------------------------------------------------------------
-    # 6. End-of-data forced liquidation
-    # ------------------------------------------------------------------
-    if current_trade is not None:
-        last_close = float(df["Close"].iloc[-1])
-        last_idx = df.index[-1]
-        _finalize_trade_ps(
-            current_trade, last_idx, last_close, "end_of_data",
-            slippage, fee_rate, fixed_fee_per_trade,
-        )
-        cash = current_trade["equity_after"]
-        trades.append(current_trade)
-        current_trade = None
-        position = "flat"
-        if equity_values:
-            equity_values[-1] = cash
-
-    # ------------------------------------------------------------------
-    # Assemble results
-    # ------------------------------------------------------------------
-    equity = pd.Series(equity_values, index=df.index)
 
     if trades:
         trades_df = pd.DataFrame(trades)
@@ -609,21 +555,6 @@ def run_backtest_with_position_sizing_and_costs(
         skipped=skipped_df,
         warnings=warnings,
     )
-
-
-def _check_exit_ps(trade: dict, high: float, low: float) -> Tuple[Optional[float], Optional[str]]:
-    """Same exit logic as _check_exit."""
-    if trade["side"] == "long":
-        if low <= trade["stop_price"]:
-            return trade["stop_price"], "stop"
-        elif high >= trade["target_price"]:
-            return trade["target_price"], "target"
-    else:  # short
-        if high >= trade["stop_price"]:
-            return trade["stop_price"], "stop"
-        elif low <= trade["target_price"]:
-            return trade["target_price"], "target"
-    return None, None
 
 
 def _finalize_trade_ps(

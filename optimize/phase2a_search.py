@@ -33,7 +33,7 @@ from optimize.utils import safe_profit_factor, slice_dataframe, compute_extra_me
 from configs.settings import load_settings
 from data.loaders.csv_loader import load_ohlcv_csv
 from strategy.signal_builder import build_signals
-from backtest.vectorbt_engine import run_backtest
+from backtest.event_engine import run_backtest
 
 
 # Time periods for validation
