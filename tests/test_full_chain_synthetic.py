@@ -7,7 +7,7 @@ Coverage requirements:
   - bullish divergence → setup → next-bar trigger → entry → target   ✅
   - bearish divergence → setup → next-bar trigger → entry → target   ✅
   - confirmation bar不允许同bar入场                                    ✅
-  - Low未触及限价单价格不得入场                                              ✅
+  - trigger未突破不得入场                                              ✅
   - 入场前stop_anchor被破坏必须取消setup                               ✅
   - setup超时必须取消                                                  ✅
   - 同一根K同时触发stop/target时必须stop first                          ✅
@@ -176,33 +176,27 @@ def test_confirmation_bar_no_immediate_entry():
 # ===================================================================
 
 def test_entry_only_on_trigger_break():
-    """No entry if Low never drops to limit price (limit order logic)."""
-    # For limit-order logic: bullish entry requires Low <= limit_price after confirm.
-    # We verify by pulling limit_price up so Low can never reach it.
+    """No entry until High (bullish) or Low (bearish) breaks trigger price."""
     df = _load_trade_slice(2075, 2275)
     df = _reindex(df)
 
     bundle_before = build_signals(df, BASELINE_STRATEGY)
-
-    # Get limit prices from setup_trigger (which now stores limit_price)
     confirm_series = bundle_before.long_setup_confirm_time
-    features = bundle_before.features
+    trigger_series = bundle_before.long_trigger_price_raw
 
     df_mod = df.copy()
-    for ct in confirm_series.dropna()[:1]:  # first confirm only
+    for ct in confirm_series.dropna():
         cp = df_mod.index.get_loc(ct)
-        # Get the limit price stored in the setup feature
-        limit_series = features["bullish_setup_trigger"].loc[ct:]
-        lp = limit_series.dropna()
-        if len(lp) > 0:
-            limit_level = float(lp.iloc[0])
-            # Raise Low after confirm to be well above limit price (prevent fill)
+        tv = trigger_series.loc[ct:]
+        tp = tv.dropna()
+        if len(tp) > 0:
+            tlev = float(tp.iloc[0])
             for i in range(cp + 1, len(df_mod)):
                 ix = df_mod.index[i]
-                df_mod.loc[ix, "Low"] = max(float(df_mod.loc[ix, "Low"]), limit_level * 1.001)
+                df_mod.loc[ix, "High"] = min(float(df_mod.loc[ix, "High"]), tlev * 0.999)
 
     bundle, _ = _run_baseline(df_mod)
-    assert bundle.entries_long.sum() == 0, "Entries survived limit price suppression"
+    assert bundle.entries_long.sum() == 0, "Entries survived trigger suppression"
 
 
 # ===================================================================
