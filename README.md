@@ -1,51 +1,115 @@
-# Quant Research Scaffold
+# Quant Research Scaffold — Strategy Confirmation Phase
 
-A starter research scaffold for a divergence + trend strategy pipeline:
+**Current phase: Strategy Confirmation**
 
-- Grid Search (coarse search)
-- Optuna + TPE (fine tuning)
-- Walk-forward validation
-- Parameter plateau analysis
+This project validates a divergence + trend continuation strategy on BTCUSDT 5m data.
+Freqtrade migration is **paused** until all confirmation checks pass.
 
-## Suggested flow
+---
 
-1. Put your market data into `data/raw/`.
-2. Implement feature logic in `features/`.
-3. Implement signal and risk logic in `strategy/`.
-4. Run a single backtest from `main.py`.
-5. Run coarse search from `optimize/grid_search.py`.
-6. Run fine search from `optimize/optuna_search.py`.
-7. Run rolling validation from `optimize/walk_forward.py`.
+## Strategy (baseline)
 
-## Design principles
+**Config:** `configs/baseline_ema55_stoch143_2r.yaml`
 
-- Reuse the same signal definition across all stages.
-- Reuse the same cost model across all stages.
-- Keep the objective function consistent between optimization and validation.
-- Favor stable parameter plateaus over sharp peaks.
+| Parameter | Value |
+|---|---|
+| EMA channel | 55 (High/Low) |
+| Stochastic | 14/1/3, oversold 20, overbought 80 |
+| Pivot | left=3, right=3, min_sep=5, max_sep=35, strict |
+| Setup max bars | 12 |
+| RR target | 2.0 |
+| Stop | Pivot2 structure high/low |
+| Trigger entry | High/p2 (long), Low@p2 (short) |
+| Structure invalidation | Stop anchor break cancels setup |
+
+### Rules
+
+**Bullish continuation:**
+1. Prior uptrend (≥60% of last 12 bars close above EMA high, shift(1))
+2. Pivot1 low ≤ oversold (stoch ≤ 20), close inside/below EMA high
+3. Pivot2 lower low, close below EMA low (deep pullback)
+4. Oscillator higher at pivot2 than pivot1 (divergence)
+5. Signal on confirmation bar (pivot2 + right_bars=3)
+6. Entry: next bar where High > trigger_price (High@p2)
+7. Stop: pivot2 Low; Target: entry + 2R
+
+**Bearish continuation:** symmetric (pivot highs, prior downtrend, overbought ≥80)
+
+---
+
+## Current status
+
+- [x] Baseline config locked
+- [x] Pivot rolling-window bug fixed (`shift(-right)` → `shift(-1)`)
+- [x] Sample data replaced with real BTCUSDT 2026Q1
+- [x] Full-chain synthetic tests (11/11 pass)
+- [x] Trade audit (29/29 valid)
+- [x] Segment report by quarter
+- [ ] Plateau analysis (full grid — estimated 17 min)
+- [ ] Freqtrade migration (paused)
+
+---
+
+## Core modules
+
+| Module | Purpose |
+|---|---|
+| `features/indicators.py` | Stochastic, ATR, EMA |
+| `features/divergence.py` | Pivot detection + divergence logic |
+| `features/trend_filter.py` | EMA channel + prior-trend state |
+| `strategy/signal_builder.py` | Unify all conditions into signals / pending setups |
+| `strategy/risk_model.py` | Position sizing (Phase 4+) |
+| `backtest/event_engine.py` | Event-driven backtest (entry, stop/target, equity) |
+| `backtest/cost_model.py` | Slippage + fee model (Phase 4+) |
+| `data/loaders/csv_loader.py` | OHLCV CSV loading |
+
+## Scripts
+
+| Script | Purpose |
+|---|---|
+| `scripts/audit_trades.py` | Per-trade breakdown with pivot, stoch, channel state |
+| `scripts/segment_report.py` | Per-quarter performance report |
+| `scripts/plateau_check.py` | Small-range parameter grid (no TPE) |
+
+## Tests
+
+| File | Purpose |
+|---|---|
+| `tests/test_smoke.py` | Smoke tests (config, build, backtest, timing) |
+| `tests/test_synthetic_pivot.py` | Pivot rolling-window semantics |
+| `tests/test_full_chain_synthetic.py` | Full-chain: divergence→setup→entry→exit→stop/target |
+
+## Data
+
+- `data/raw/BTCUSDT_5m_2024_2025.csv` — Full training set (210k bars)
+- `data/raw/BTCUSDT_5m_2024.csv` — 2024 only
+- `data/raw/BTCUSDT_5m_2025.csv` — 2025 only
+- `data/raw/BTCUSDT_5m_2026Q1.csv` — Out-of-sample (26k bars)
+- `example_data/sample_ohlcv.csv` — Small BTC sample for tests
 
 ## Quick start
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
-pip install -r requirements.txt
-python main.py
+# Run all tests
+python -m pytest tests/
+
+# Audit trades
+python scripts/audit_trades.py
+
+# Quarter-by-quarter report
+python scripts/segment_report.py
+
+# Parameter plateau check (50 combos smoke test)
+python scripts/plateau_check.py --quick
+
+# Full plateau grid (1296 combos, ~17 min)
+python scripts/plateau_check.py
 ```
 
-## Core modules
+## Design principles
 
-- `features/indicators.py`: indicators such as stochastic, ATR, EMA
-- `features/divergence.py`: pivot and divergence detection
-- `features/trend_filter.py`: trend / EMA channel filters
-- `strategy/signal_builder.py`: unify all conditions into signals
-- `strategy/risk_model.py`: stop, target, position sizing
-- `backtest/event_engine.py`: vectorbt-based backtest entry point
-- `optimize/grid_search.py`: coarse parameter sweep
-- `optimize/optuna_search.py`: fine tuning with Optuna
-- `optimize/walk_forward.py`: rolling train/test validation
-- `rl/env.py`: Gymnasium environment for dynamic parameter switching
-
-## Recommended next step
-
-Start by replacing the placeholder divergence logic with your exact stochastic D + pivot structure rules.
+- Same signal definition across all stages
+- Same cost model across all stages
+- Consistent objective function between optimization and validation
+- Favor stable parameter plateaus over sharp peaks
+- No future functions: shift(1) on all lookback, pivot right-bar confirmation
