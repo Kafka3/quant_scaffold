@@ -111,14 +111,21 @@ def _signal_bundle_zeros(n: int) -> SignalBundle:
 # ===================================================================
 
 def test_bullish_divergence_full_chain():
-    """Real BTC data slice → bullish divergence → entry → target exit."""
+    """Real BTC data slice → bullish divergence → entry → exit at target.
+
+    The slice (bars 2075-2275) is known to produce a bullish trade
+    that exits at target.  Any stop-exit indicates an unexpected
+    divergence condition failure.
+    """
     df = _load_trade_slice(2075, 2275)
     df = _reindex(df)
     bundle, result = _run_baseline(df)
     assert len(result.trades) > 0, "No trades on real data slice"
     first = result.trades.iloc[0]
     assert first["side"] == "long", f"First trade is {first['side']}"
-    assert first["exit_reason"] in ("target", "stop"), first["exit_reason"]
+    assert first["exit_reason"] == "target", (
+        f"Expected target exit, got {first['exit_reason']} at entry {first['entry_time']}"
+    )
 
 
 # ===================================================================
@@ -337,40 +344,71 @@ def test_same_bar_exit_stop_first():
 # ===================================================================
 
 def test_no_signal_without_price_divergence():
-    """Price makes lower low but oscillator goes even lower → NOT divergence."""
-    n = 200
-    np.random.seed(42)
+    """Price makes lower low but osc makes lower low too → NOT divergence.
 
-    # Uptrend for prior trend, then a dip + deeper dip
-    close = np.linspace(100, 106, 70).tolist()
-    close += list(np.linspace(106, 105.5, 10))   # p1 dip
-    close += list(np.linspace(105.5, 105.0, 10))  # p2 deeper dip
-    close += list(np.linspace(105.0, 108.0, n - 90))  # recovery
-    close = np.array(close)
+    Take a data slice known to produce bullish divergence, then modify
+    Low so that pivot2 is NOT a lower low (price rises instead),
+    breaking only the price-divergence condition while keeping everything
+    else intact.  The remaining data may still produce other signals,
+    but the original signal must NOT fire.
+    """
+    df = _load_trade_slice(2075, 2275)
+    df = _reindex(df)
 
-    # Manually ensure osc drops even more at p2 (no divergence)
-    # We do this by controlling the relationship: we need
-    # osc[p2] <= osc[p1] (no bullish divergence)
-    # The stochastic is based on Close relative to 14-bar range.
-    # If we make the close pattern such that the price at p2 is
-    # near the bottom of the 14-bar range, osc will be low too.
+    # Run baseline to identify the pivot bars
+    cfg = BASELINE_STRATEGY
+    from features.indicators import stochastic_d as stoch
+    osc = stoch(df, cfg["stochastic"]["k_period"], cfg["stochastic"]["d_period"],
+                cfg["stochastic"]["smooth"])
+    trend = build_trend_filter(df, cfg["trend"])
+    div = detect_regular_divergence(df, osc, cfg, trend)
 
-    idx = pd.date_range("2025-01-01 00:00", periods=n, freq="5min")
-    df = pd.DataFrame({
-        "Open": pd.Series(close).shift(1).fillna(close[0]),
-        "High": close * 1.002,
-        "Low": close * 0.998,
-        "Close": close,
-        "Volume": np.ones(n) * 100,
-    }, index=idx)
+    # Verify there is at least one signal (otherwise test is meaningless)
+    if div.bullish.sum() == 0:
+        import pytest
+        pytest.skip("No bullish divergence in slice")
 
-    bundle, result = _run_baseline(df)
+    # For each signal, identify the pivot pair
+    sig_idx = df.index[div.bullish][0]
+    p1_idx = div.bullish_pivot1_idx.loc[sig_idx]
+    p2_idx = div.bullish_pivot2_idx.loc[sig_idx]
+    p1_price = div.bullish_pivot1_price.loc[sig_idx]
+    p2_price = div.bullish_pivot2_price.loc[sig_idx]
 
-    # For the baseline with min_close_ratio=0.6, this might still produce signals
-    # because the prior_trend condition is easier to satisfy.
-    # The key assertion: we cannot have MORE trades than the real data slice
-    # (whose baseline produces ~1 trade per 200 bars). Soft check.
-    assert len(result.trades) <= 2, f"Too many trades without clear price div: {len(result.trades)}"
+    # Currently p2_price < p1_price (lower low → price divergence holds).
+    # Flip it: raise Low at p2 so p2_price >= p1_price.
+    # We need Low[p2] to be >= Low[p1].
+    # To preserve the pivot structure, also raise Low around p2.
+    df_mod = df.copy()
+    p2_pos = df_mod.index.get_loc(p2_idx)
+
+    # Raise Low at p2 and a few bars around it to prevent the pivot
+    # from being a strict pivot low (and to make p2_price >= p1_price)
+    lift = float(p1_price) * 1.002  # slightly above p1_price
+    for offset in range(-3, 4):
+        pos = p2_pos + offset
+        if 0 <= pos < len(df_mod):
+            df_mod.iloc[pos, df_mod.columns.get_loc("Low")] = max(
+                float(df_mod.iloc[pos, df_mod.columns.get_loc("Low")]),
+                lift,
+            )
+
+    # Re-run: the original signal must vanish
+    bundle, result = _run_baseline(df_mod)
+
+    # Check that the original bar no longer has a signal
+    # We do this by re-running divergence detection on the modified data
+    osc_mod = stoch(df_mod, cfg["stochastic"]["k_period"], cfg["stochastic"]["d_period"],
+                    cfg["stochastic"]["smooth"])
+    trend_mod = build_trend_filter(df_mod, cfg["trend"])
+    div_mod = detect_regular_divergence(df_mod, osc_mod, cfg, trend_mod)
+
+    assert div_mod.bullish.sum() == 0, (
+        f"Bullish divergence survived price-flip: {div_mod.bullish.sum()} signals"
+    )
+    assert bundle.entries_long.sum() == 0, (
+        f"Long entries survived price-flip: {bundle.entries_long.sum()}"
+    )
 
 
 # ===================================================================
@@ -378,46 +416,63 @@ def test_no_signal_without_price_divergence():
 # ===================================================================
 
 def test_no_signal_without_osc_divergence():
-    """Oscillator makes higher low but price goes even higher → NOT divergence.
+    """Price makes lower low BUT oscillator makes lower low too → NOT divergence.
 
-    Bullish divergence requires oscillator[p2] > oscillator[p1].
-    If osc[p2] <= osc[p1] while price drops (lower low), no signal.
+    Take the same slice, and modify High at the pivot2 window to force
+    the oscillator (stochastic %D) to drop at pivot2, making it ≤ osc@p1
+    and thus breaking the oscillator-divergence condition.
     """
-    n = 200
+    df = _load_trade_slice(2075, 2275)
+    df = _reindex(df)
 
-    # Construct close where both price AND osc drop together
-    close = np.linspace(100, 106, 70).tolist()
-    close += list(np.linspace(106, 105.5, 10))
-    close += list(np.linspace(105.5, 104.8, 10))  # deep drop, osc should be low too
-    close += list(np.linspace(104.8, 108.0, n - 90))
-    close = np.array(close)
+    cfg = BASELINE_STRATEGY
+    from features.indicators import stochastic_d as stoch
+    osc = stoch(df, cfg["stochastic"]["k_period"], cfg["stochastic"]["d_period"],
+                cfg["stochastic"]["smooth"])
+    trend = build_trend_filter(df, cfg["trend"])
+    div = detect_regular_divergence(df, osc, cfg, trend)
 
-    idx = pd.date_range("2025-01-01 00:00", periods=n, freq="5min")
-    df = pd.DataFrame({
-        "Open": pd.Series(close).shift(1).fillna(close[0]),
-        "High": close * 1.002,
-        "Low": close * 0.998,
-        "Close": close,
-        "Volume": np.ones(n) * 100,
-    }, index=idx)
+    if div.bullish.sum() == 0:
+        import pytest
+        pytest.skip("No bullish divergence in slice")
 
-    # Compute osc to verify
-    osc = stochastic_d(df, 14, 3, 1)
-    low_vals = df["Low"].values
-    # Find actual pivot lows in this data
-    from features.divergence import _pivot_low
-    pl = _pivot_low(df["Low"], 3, 3, strict=True)
+    sig_idx = df.index[div.bullish][0]
+    p1_idx = div.bullish_pivot1_idx.loc[sig_idx]
+    p2_idx = div.bullish_pivot2_idx.loc[sig_idx]
+    p1_price = div.bullish_pivot1_price.loc[sig_idx]
+    p2_price = div.bullish_pivot2_price.loc[sig_idx]
+    osc_p1 = osc.loc[p1_idx]
+    osc_p2 = osc.loc[p2_idx]
 
-    pivot_positions = [i for i in range(n) if pl.iloc[i]]
-    print(f"  Pivot lows: {pivot_positions}")
+    # Currently osc_p2 > osc_p1 (higher osc at lower low → divergence holds).
+    # To break oscillator divergence we need osc_p2 <= osc_p1.
+    # Stochastic %D is based on Close position within recent High-Low range.
+    # Raising High at/near p2 will increase the range denominator,
+    # pushing %D down.
+    df_mod = df.copy()
+    p2_pos = df_mod.index.get_loc(p2_idx)
 
-    # If there are pivot pairs with lower prices and higher osc → that's divergence
-    # and we can't fully prevent it without controlling osc precisely.
-    # We just verify the flat + no-trend check still passes.
-    bundle, result = _run_baseline(df)
+    # Raise High dramatically at p2 and surrounding bars to push %D down
+    for offset in range(-2, 3):
+        pos = p2_pos + offset
+        if 0 <= pos < len(df_mod):
+            current_high = float(df_mod.iloc[pos, df_mod.columns.get_loc("High")])
+            df_mod.iloc[pos, df_mod.columns.get_loc("High")] = current_high * 1.10
 
-    # Soft: should not produce excessive trades
-    assert len(result.trades) <= 2, f"Too many trades: {len(result.trades)}"
+    # Re-run and verify
+    osc_mod = stoch(df_mod, cfg["stochastic"]["k_period"], cfg["stochastic"]["d_period"],
+                    cfg["stochastic"]["smooth"])
+    trend_mod = build_trend_filter(df_mod, cfg["trend"])
+    div_mod = detect_regular_divergence(df_mod, osc_mod, cfg, trend_mod)
+
+    assert div_mod.bullish.sum() == 0, (
+        f"Bullish divergence survived osc-flip: {div_mod.bullish.sum()} signals"
+    )
+
+    bundle, result = _run_baseline(df_mod)
+    assert bundle.entries_long.sum() == 0, (
+        f"Long entries survived osc-flip: {bundle.entries_long.sum()}"
+    )
 
 
 # ===================================================================

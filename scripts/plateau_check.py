@@ -17,10 +17,6 @@ Search space (deliberately narrow — no TPE):
   - rr:              1.5, 2.0, 2.5
   - setup_max_bars:  8, 12, 16
 
-To keep runtime manageable, the full grid runs in a single sequential
-process.  Estimated runtime: ~3-4 hours for 1296 combos on 210k bars.
-Use --quick for a 50-combo smoke test.
-
 Output columns:
   ema_period, stoch_k, pivot_left, pivot_right, rr, setup_max_bars,
   total_return, trade_count, win_rate, profit_factor, max_drawdown,
@@ -83,7 +79,7 @@ def _build_config(ema_period: int, stoch_k: int, pivot_left: int,
         "trend": {
             "ema_period": ema_period,
             "lookback_bars": 12,
-            "min_close_ratio": 1.0,
+            "min_close_ratio": 0.6,  # matches baseline_ema55_stoch143_2r.yaml
         },
         "risk": {
             "atr_period": 14,
