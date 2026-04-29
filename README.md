@@ -39,14 +39,15 @@ Freqtrade migration is **paused** until all confirmation checks pass.
 
 ## Current status
 
-- [x] Baseline config locked
+- [x] Baseline config locked (min_close_ratio = 0.6)
 - [x] Pivot rolling-window bug fixed (`shift(-right)` → `shift(-1)`)
-- [x] Sample data replaced with real BTCUSDT 2026Q1
-- [x] Full-chain synthetic tests (11/11 pass)
-- [x] Trade audit (29/29 valid)
+- [x] Sample data uses real BTCUSDT 2026Q1
+- [x] Full-chain synthetic tests (16/16 pass)
+- [x] Trade audit (351/351 all valid)
 - [x] Segment report by quarter
-- [ ] Plateau analysis (full grid — estimated 17 min)
-- [ ] Freqtrade migration (paused)
+- [x] Plateau analysis quick run (50 combos)
+- [ ] Plateau analysis full grid (1296 combos — runtime depends on machine)
+- [ ] Freqtrade migration (paused until all confirmation checks pass)
 
 ---
 
@@ -102,7 +103,7 @@ python scripts/segment_report.py
 # Parameter plateau check (50 combos smoke test)
 python scripts/plateau_check.py --quick
 
-# Full plateau grid (1296 combos, ~17 min)
+# Full plateau grid (1296 combos — runtime depends on machine)
 python scripts/plateau_check.py
 ```
 

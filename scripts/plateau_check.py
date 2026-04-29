@@ -3,8 +3,11 @@
 plateau_check.py — Small-scale parameter plateau analysis for baseline strategy.
 
 Runs a cartesian product of parameter variations around baseline defaults,
-evaluates each combination on BTC 2024-2025 data, and saves results to
-reports/plateau_check.csv.
+evaluates each combination on BTC 2024-2025 data.
+
+Use:
+  --quick: 50 combos on 2-month subset, saved to reports/plateau_check.csv
+  (default): all 1296 combos (~3-4 hours), saved to reports/plateau_check_full.csv
 
 Search space (deliberately narrow — no TPE):
   - ema_period:     45, 55, 65
@@ -25,7 +28,7 @@ Output columns:
 
 Usage:
   python scripts/plateau_check.py [--data data/raw/BTCUSDT_5m_2024_2025.csv]
-                                   [--quick]  # runs first 50 combos for testing
+  python scripts/plateau_check.py --quick  # 50 combos, 2-month subset
 """
 
 import argparse
@@ -142,7 +145,12 @@ def main():
     parser.add_argument(
         "--out",
         default=str(ROOT / "reports" / "plateau_check.csv"),
-        help="Output CSV path",
+        help="Output CSV path (quick mode)",
+    )
+    parser.add_argument(
+        "--out-full",
+        default=str(ROOT / "reports" / "plateau_check_full.csv"),
+        help="Output CSV path (full grid)",
     )
     parser.add_argument(
         "--quick",
@@ -210,12 +218,13 @@ def main():
 
     # Save
     report_df = pd.DataFrame(records)
-    out_path = Path(args.out)
+    out_path = Path(args.out) if args.quick else Path(args.out_full)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     report_df.to_csv(out_path, index=False)
 
     total_time = time.time() - start
-    print(f"\nSaved {len(report_df)} results to {out_path} ({total_time:.1f}s)")
+    mode = "quick" if args.quick else "full"
+    print(f"\nSaved {len(report_df)} results ({mode}) to {out_path} ({total_time:.1f}s)")
 
     # Print baseline and top performers
     baseline_row = report_df[report_df["is_baseline"] == True]

@@ -19,7 +19,7 @@ strategy:
   trend:
     ema_period: 55
     lookback_bars: 12
-    min_close_ratio: 1.0
+    min_close_ratio: 0.6
 
   risk:
     atr_period: 14
