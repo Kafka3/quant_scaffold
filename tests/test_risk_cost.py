@@ -102,10 +102,10 @@ def test_calculate_fees():
         entry_price=100000,
         exit_price=102000,
         qty=0.1,
-        fee_rate=0.0004,
+        fee_rate=0.002,
         fixed_fee_per_trade=0.0,
     )
-    expected = 100000 * 0.1 * 0.0004 + 102000 * 0.1 * 0.0004
+    expected = 100000 * 0.1 * 0.002 + 102000 * 0.1 * 0.002
     assert fee == pytest.approx(expected)
 
 

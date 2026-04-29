@@ -19,6 +19,9 @@ class PendingSetup:
     trigger_price: float
     stop_anchor: float
     bars_waited: int = 0
+    limit_price: float = 0.0          # 限价单价格：right bar 第 2 根收盘价
+    rr_target: float = 0.0             # 2R 目标价，用于检查是否已跑远
+    already_run_away: bool = False     # 标记是否已跑远
 
 
 @dataclass
@@ -49,6 +52,7 @@ def build_signals(df: pd.DataFrame, config: dict) -> SignalBundle:
     setup_max_bars = setup_cfg.get("setup_max_bars", 12)
     replace_same_side_setup = setup_cfg.get("replace_same_side_setup", True)
     invalidate_on_stop_anchor_break = setup_cfg.get("invalidate_on_stop_anchor_break", True)
+    right_bars = config["pivots"]["right_bars"]
 
     osc = stochastic_d(
         df,
@@ -102,12 +106,12 @@ def build_signals(df: pd.DataFrame, config: dict) -> SignalBundle:
         expired_short = False
 
         # ------------------------------------------------------------------
-        # 1. 处理已存在的 pending setup（等待、触发或失效）
+        # 1. 处理已存在的 pending setup（限制价单触发或失效）
         # ------------------------------------------------------------------
-        # 规则明确：
+        # 规则：
         #   - 背离确认 bar 只创建 setup，同 bar 不触发。
-        #   - 触发只能从确认 bar 的下一根 K 线开始（current_pos > setup_pos）。
-        #   - setup 可能因结构破坏（stop_anchor 被击穿）或超时（bars_waited > max）而失效。
+        #   - 挂限价单（right bar 第 2 根收盘价），不追突破。
+        #   - 如果价格已跑远到 2R，取消订单。
         # ------------------------------------------------------------------
 
         if pending_long is not None:
@@ -115,7 +119,7 @@ def build_signals(df: pd.DataFrame, config: dict) -> SignalBundle:
             if current_pos > pending_long.setup_pos:
                 pending_long.bars_waited += 1
 
-            # 失效 1：结构破坏 — Low 跌破 stop_anchor（仅当配置启用时）
+            # 失效 1：结构破坏 — Low 跌破 stop_anchor
             if invalidate_on_stop_anchor_break and df.loc[idx, "Low"] < pending_long.stop_anchor:
                 expired_long = True
                 pending_long = None
@@ -123,25 +127,30 @@ def build_signals(df: pd.DataFrame, config: dict) -> SignalBundle:
             elif pending_long.bars_waited > setup_max_bars:
                 expired_long = True
                 pending_long = None
-            # 触发：只能从确认 bar 下一根开始，High 上穿 trigger_price，只触发一次
-            elif current_pos > pending_long.setup_pos and df.loc[idx, "High"] > pending_long.trigger_price:
-                entries_long.loc[idx] = True
-                long_entry_price.loc[idx] = pending_long.trigger_price
-                long_stop_price.loc[idx] = pending_long.stop_anchor - risk_cfg["stop_buffer"]
-                r = long_entry_price.loc[idx] - long_stop_price.loc[idx]
-                long_target_price.loc[idx] = long_entry_price.loc[idx] + risk_cfg["rr_target"] * r
-                long_setup_pivot2_time.loc[idx] = pending_long.pivot2_time
-                long_setup_confirm_time.loc[idx] = pending_long.setup_time
-                long_trigger_price_raw.loc[idx] = pending_long.trigger_price
+            # 价格跑远检查：如果远超 2R，取消订单
+            elif not pending_long.already_run_away and df.loc[idx, "High"] >= pending_long.rr_target:
+                # 已跑远到 2R 或以上，限价单无法成交，取消
+                expired_long = True
                 pending_long = None
-            # 否则继续持有 pending setup（等待中）
+            else:
+                # 限价单触发：Low 触及或低于限价单价格（空头方吃单做多）
+                if df.loc[idx, "Low"] <= pending_long.limit_price:
+                    entries_long.loc[idx] = True
+                    long_entry_price.loc[idx] = pending_long.limit_price
+                    long_stop_price.loc[idx] = pending_long.stop_anchor - risk_cfg["stop_buffer"]
+                    r = long_entry_price.loc[idx] - long_stop_price.loc[idx]
+                    long_target_price.loc[idx] = long_entry_price.loc[idx] + risk_cfg["rr_target"] * r
+                    long_setup_pivot2_time.loc[idx] = pending_long.pivot2_time
+                    long_setup_confirm_time.loc[idx] = pending_long.setup_time
+                    long_trigger_price_raw.loc[idx] = pending_long.trigger_price
+                    pending_long = None
 
         if pending_short is not None:
             # bars_waited 从确认 bar 后的第一根 K 线开始计数
             if current_pos > pending_short.setup_pos:
                 pending_short.bars_waited += 1
 
-            # 失效 1：结构破坏 — High 涨破 stop_anchor（仅当配置启用时）
+            # 失效 1：结构破坏 — High 涨破 stop_anchor
             if invalidate_on_stop_anchor_break and df.loc[idx, "High"] > pending_short.stop_anchor:
                 expired_short = True
                 pending_short = None
@@ -149,24 +158,30 @@ def build_signals(df: pd.DataFrame, config: dict) -> SignalBundle:
             elif pending_short.bars_waited > setup_max_bars:
                 expired_short = True
                 pending_short = None
-            # 触发：只能从确认 bar 下一根开始，Low 跌破 trigger_price，只触发一次
-            elif current_pos > pending_short.setup_pos and df.loc[idx, "Low"] < pending_short.trigger_price:
-                entries_short.loc[idx] = True
-                short_entry_price.loc[idx] = pending_short.trigger_price
-                short_stop_price.loc[idx] = pending_short.stop_anchor + risk_cfg["stop_buffer"]
-                r = short_stop_price.loc[idx] - short_entry_price.loc[idx]
-                short_target_price.loc[idx] = short_entry_price.loc[idx] - risk_cfg["rr_target"] * r
-                short_setup_pivot2_time.loc[idx] = pending_short.pivot2_time
-                short_setup_confirm_time.loc[idx] = pending_short.setup_time
-                short_trigger_price_raw.loc[idx] = pending_short.trigger_price
+            # 价格跑远检查：如果远超 2R，取消订单
+            elif not pending_short.already_run_away and df.loc[idx, "Low"] <= pending_short.rr_target:
+                # 已跑远到 2R 或以下，限价单无法成交，取消
+                expired_short = True
                 pending_short = None
-            # 否则继续持有 pending setup（等待中）
+            else:
+                # 限价单触发：High 触及或高于限价单价格（多头方吃单做空）
+                if df.loc[idx, "High"] >= pending_short.limit_price:
+                    entries_short.loc[idx] = True
+                    short_entry_price.loc[idx] = pending_short.limit_price
+                    short_stop_price.loc[idx] = pending_short.stop_anchor + risk_cfg["stop_buffer"]
+                    r = short_stop_price.loc[idx] - short_entry_price.loc[idx]
+                    short_target_price.loc[idx] = short_entry_price.loc[idx] - risk_cfg["rr_target"] * r
+                    short_setup_pivot2_time.loc[idx] = pending_short.pivot2_time
+                    short_setup_confirm_time.loc[idx] = pending_short.setup_time
+                    short_trigger_price_raw.loc[idx] = pending_short.trigger_price
+                    pending_short = None
 
         # ------------------------------------------------------------------
-        # 2. 在背离确认 bar 上创建新 setup
+        # 2. 在背离确认 bar 上创建新 setup，并计算限价单价格
         # ------------------------------------------------------------------
-        # 注意：setup 在确认 bar 上创建，但同 bar 不触发。
-        # 如果 replace_same_side_setup=True，新 setup 会覆盖旧 setup。
+        # 限价单价格 = right bar 第 2 根（pivot2_pos + 1）的收盘价
+        # 注意：pivot2 在 pivot2_pos，right bar #1 在 pivot2_pos+1，right bar #2 在 pivot2_pos+2
+        # （pivot2_pos + 2 = right bar #2，确认 bar 在 pivot2_pos + right_bars）
         # ------------------------------------------------------------------
 
         if div.bullish.loc[idx]:
@@ -177,6 +192,20 @@ def build_signals(df: pd.DataFrame, config: dict) -> SignalBundle:
                 if replace_same_side_setup or pending_long is None:
                     setup_pos = current_pos
                     pivot2_pos = df.index.get_loc(pivot2_idx)
+
+                    # 限价单价格 = right bar 第 2 根收盘价 = pivot2_pos + right_bars - 1
+                    # right_bars=3 时：pivot2_pos+0=pivot_low, +1=right#1, +2=right#2, +3=确认bar
+                    limit_bar_pos = pivot2_pos + right_bars - 1
+                    if limit_bar_pos < len(df):
+                        limit_price = float(df["Close"].iloc[limit_bar_pos])
+                    else:
+                        limit_price = trigger_price
+
+                    # 预计算 2R 目标价，用于跑远检查
+                    stop = stop_anchor - risk_cfg["stop_buffer"]
+                    r = limit_price - stop
+                    rr_target_price = limit_price + risk_cfg["rr_target"] * r
+
                     pending_long = PendingSetup(
                         setup_bar_idx=idx,
                         setup_pos=setup_pos,
@@ -187,6 +216,8 @@ def build_signals(df: pd.DataFrame, config: dict) -> SignalBundle:
                         trigger_price=trigger_price,
                         stop_anchor=stop_anchor,
                         bars_waited=0,
+                        limit_price=limit_price,
+                        rr_target=rr_target_price,
                     )
 
         if div.bearish.loc[idx]:
@@ -197,6 +228,19 @@ def build_signals(df: pd.DataFrame, config: dict) -> SignalBundle:
                 if replace_same_side_setup or pending_short is None:
                     setup_pos = current_pos
                     pivot2_pos = df.index.get_loc(pivot2_idx)
+
+                    # 限价单价格 = right bar 第 2 根收盘价
+                    limit_bar_pos = pivot2_pos + right_bars - 1
+                    if limit_bar_pos < len(df):
+                        limit_price = float(df["Close"].iloc[limit_bar_pos])
+                    else:
+                        limit_price = trigger_price
+
+                    # 预计算 2R 目标价，用于跑远检查
+                    stop = stop_anchor + risk_cfg["stop_buffer"]
+                    r = stop - limit_price
+                    rr_target_price = limit_price - risk_cfg["rr_target"] * r
+
                     pending_short = PendingSetup(
                         setup_bar_idx=idx,
                         setup_pos=setup_pos,
@@ -207,13 +251,15 @@ def build_signals(df: pd.DataFrame, config: dict) -> SignalBundle:
                         trigger_price=trigger_price,
                         stop_anchor=stop_anchor,
                         bars_waited=0,
+                        limit_price=limit_price,
+                        rr_target=rr_target_price,
                     )
 
         # 记录当前 bar 的 setup 状态到 features 列表
         bullish_setup_active.append(pending_long is not None)
         bearish_setup_active.append(pending_short is not None)
-        bullish_setup_trigger.append(pending_long.trigger_price if pending_long is not None else pd.NA)
-        bearish_setup_trigger.append(pending_short.trigger_price if pending_short is not None else pd.NA)
+        bullish_setup_trigger.append(pending_long.limit_price if pending_long is not None else pd.NA)
+        bearish_setup_trigger.append(pending_short.limit_price if pending_short is not None else pd.NA)
         bullish_setup_stop_anchor.append(pending_long.stop_anchor if pending_long is not None else pd.NA)
         bearish_setup_stop_anchor.append(pending_short.stop_anchor if pending_short is not None else pd.NA)
         bullish_setup_pivot2_pos.append(pending_long.pivot2_pos if pending_long is not None else pd.NA)

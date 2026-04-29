@@ -33,6 +33,6 @@ strategy:
 
 backtest:
   initial_cash: 100000
-  fee_per_trade: 0.0
+  fee_rate: 0.002
   slippage: 0.0
   allow_short: true
