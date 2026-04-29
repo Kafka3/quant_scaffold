@@ -118,6 +118,8 @@ def main():
             pnl_pct = pnl_price / entry_price * 100 if entry_price != 0 else 0.0
 
         realized_R = pnl_price / risk_per_unit if risk_per_unit != 0 else 0.0
+        pnl_from_R = realized_R * risk_per_unit
+        pnl_r_diff = pnl_price - pnl_from_R
         gross_win_R = realized_R if realized_R > 0 else 0.0
         gross_loss_R = realized_R if realized_R < 0 else 0.0
 
@@ -223,6 +225,11 @@ def main():
         vals["valid_target_rr"] = bool(abs(implied_rr - 2.0) < 0.01) if risk_per_unit != 0 else False
         vals["valid_all"] = all(vals.values())
 
+        # PnL/R consistency check: pnl_from_R should match pnl_price exactly
+        # (within floating point tolerance).  Any mismatch indicates a bug.
+        TOLERANCE = 0.01
+        vals["valid_pnl_r_consistency"] = bool(abs(pnl_r_diff) < TOLERANCE)
+
         records.append({
             "trade_id": trade_id,
             "side": side,
@@ -239,6 +246,8 @@ def main():
             "pivot2_price": round(p2_price, 2) if pd.notna(p2_price) else pd.NA,
             "risk_per_unit": round(risk_per_unit, 2),
             "realized_R": round(realized_R, 2),
+            "pnl_from_R": round(pnl_from_R, 2),
+            "pnl_r_diff": round(pnl_r_diff, 2),
             "pnl_price": round(pnl_price, 2),
             "pnl_pct": round(pnl_pct, 4),
             "gross_win_R": round(gross_win_R, 2),

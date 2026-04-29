@@ -5,23 +5,30 @@ segment_report.py — Per-quarter performance report for baseline strategy.
 Splits data by calendar quarter, runs baseline backtest on each segment,
 and outputs reports/segment_report.csv.
 
-Columns:
+Output columns:
   segment, bar_count, trade_count,
   win_rate, avg_win_R, avg_loss_R, expectancy_R,
   expected_R_from_winrate,
   profit_factor_price_pnl, profit_factor_R,
+  expectancy_price_pnl,
+  avg_win_risk_per_unit, avg_loss_risk_per_unit,
   target_exit_count, stop_exit_count, other_exit_count,
   max_drawdown_pct, avg_R, long_count, short_count,
   avg_hold_bars, max_consecutive_losses, r_drawdown_abs
 
 Notes:
-  - profit_factor_price_pnl: sum(pnl>0) / abs(sum(pnl<0)) — uses dollar PnL
-  - profit_factor_R: sum(realized_R>0) / abs(sum(realized_R<0)) — uses R multiples
-  - expected_R_from_winrate: win_rate * avg_win_R - (1-win_rate) * abs(avg_loss_R)
-    This validates that expectancy_R equals the formula.
-  - max_consecutive_losses: count of consecutive trades with pnl <= 0.
-    First loser = count 1, streak resets on each winner.
-  - r_drawdown_abs: peak-to-trough of cumulative R-multiple curve (absolute R units)
+  - profit_factor_price_pnl: sum(pnl>0) / abs(sum(pnl<0)) — dollar PnL.
+    Relevant for fixed-stake / fixed-BTC position sizing.
+  - profit_factor_R: sum(realized_R>0) / abs(sum(realized_R<0)) — R multiples.
+    Relevant for fixed-risk position sizing where
+    qty = equity * risk_pct / risk_per_unit.
+  - expectancy_price_pnl: win_rate * avg_win_pnl - (1-win_rate) * avg_loss_pnl.
+  - expectancy_R / expected_R_from_winrate: two equivalent calculations of
+    expectancy in R-multiple space (should match to < 0.001).
+  - avg_win_risk_per_unit vs avg_loss_risk_per_unit: if winning trades have
+    smaller risk_per_unit than losing trades, price-PnL metrics will be
+    weaker than R-multiple metrics even if the strategy has structural edge.
+  - max_consecutive_losses: trades with pnl <= 0 resets on each winner.
 
 Usage:
   python scripts/segment_report.py [--data data/raw/BTCUSDT_5m_2024_2025.csv]
@@ -118,6 +125,8 @@ def main():
                 "win_rate": 0.0, "avg_win_R": 0.0, "avg_loss_R": 0.0,
                 "expectancy_R": 0.0, "expected_R_from_winrate": 0.0,
                 "profit_factor_price_pnl": 0.0, "profit_factor_R": 0.0,
+                "expectancy_price_pnl": 0.0,
+                "avg_win_risk_per_unit": 0.0, "avg_loss_risk_per_unit": 0.0,
                 "target_exit_count": 0, "stop_exit_count": 0, "other_exit_count": 0,
                 "max_drawdown_pct": 0.0, "avg_R": 0.0,
                 "long_count": 0, "short_count": 0,
@@ -136,6 +145,11 @@ def main():
         trades["realized_R"] = trades.apply(
             lambda r: r["pnl"] / r["R"] if r["R"] != 0 else 0.0, axis=1
         )
+        # sanity: pnl_from_R should equal pnl
+        trades["pnl_from_R"] = trades["realized_R"] * trades["R"]
+        pnl_r_diff = abs(trades["pnl_from_R"] - trades["pnl"]).max()
+        if pnl_r_diff > 0.01:
+            print(f"  WARNING {label}: max pnl/r diff = {pnl_r_diff:.4f}")
 
         wins = trades[trades["pnl"] > 0]
         losses = trades[trades["pnl"] < 0]
@@ -145,9 +159,12 @@ def main():
         win_rate = win_count / trade_count if trade_count > 0 else 0.0
 
         # R stats
-        avg_r = trades["realized_R"].mean()
         avg_win_R = wins["realized_R"].mean() if win_count > 0 else 0.0
         avg_loss_R = losses["realized_R"].mean() if loss_count > 0 else 0.0
+        avg_win_risk_per_unit = wins["R"].mean() if win_count > 0 else 0.0
+        avg_loss_risk_per_unit = losses["R"].mean() if loss_count > 0 else 0.0
+        avg_r = trades["realized_R"].mean()
+
         expectancy_R = (
             win_rate * avg_win_R + (1 - win_rate) * avg_loss_R
             if trade_count > 0 else 0.0
@@ -157,6 +174,13 @@ def main():
             if trade_count > 0 else 0.0
         )
 
+        # Expectancy in price-PnL terms
+        avg_win_pnl = wins["pnl"].mean() if win_count > 0 else 0.0
+        avg_loss_pnl = losses["pnl"].mean() if loss_count > 0 else 0.0
+        expectancy_price_pnl = (
+            win_rate * avg_win_pnl + (1 - win_rate) * avg_loss_pnl
+            if trade_count > 0 else 0.0
+        )
         # Profit factor: price PnL
         gross_profit_pnl = float(wins["pnl"].sum()) if win_count > 0 else 0.0
         gross_loss_pnl = float(abs(losses["pnl"].sum())) if loss_count > 0 else 0.0
@@ -202,6 +226,9 @@ def main():
             "expected_R_from_winrate": round(expected_R_from_winrate, 4),
             "profit_factor_price_pnl": round(pf_price, 4) if pf_price != float("inf") else "inf",
             "profit_factor_R": round(pf_R, 4) if pf_R != float("inf") else "inf",
+            "expectancy_price_pnl": round(expectancy_price_pnl, 4),
+            "avg_win_risk_per_unit": round(avg_win_risk_per_unit, 2),
+            "avg_loss_risk_per_unit": round(avg_loss_risk_per_unit, 2),
             "target_exit_count": target_count,
             "stop_exit_count": stop_count,
             "other_exit_count": other_count,
