@@ -71,9 +71,9 @@ MIN_STOP_DISTANCE_PCT = 0.001  # 0.1%
 MAX_STOP_DISTANCE_PCT = 0.02   # 2.0%
 
 # Cost
-FIXED_FEE_PER_TRADE = 5.0
-SLIPPAGE_PER_SIDE = 5.0
-FEE_RATE = 0.0
+FIXED_FEE_PER_TRADE = 0.0
+SLIPPAGE_PER_SIDE = 0.0005   # 0.05% of notional
+FEE_RATE = 0.001             # 0.1%
 
 MIN_QTY = 0.0001
 QTY_STEP = 0.0001
@@ -189,7 +189,7 @@ def run_backtest_with_filters(
                     "position_mode": POSITION_MODE,
                 }
 
-            entry_filled = apply_slippage(entry_price_raw, side, "entry", slippage)
+            entry_filled = apply_slippage(entry_price_raw, side, "entry", entry_price_raw * slippage)
             return {
                 "entry_time": idx,
                 "side": side,
@@ -216,7 +216,7 @@ def run_backtest_with_filters(
         return None, None
 
     def finalize_exit(trade, idx, exit_price_raw, exit_reason, cash):
-        exit_filled = apply_slippage(exit_price_raw, trade["side"], "exit", slippage)
+        exit_filled = apply_slippage(exit_price_raw, trade["side"], "exit", exit_price_raw * slippage)
 
         if trade["side"] == "long":
             gross_pnl = (exit_filled - trade["entry_price_filled"]) * trade["qty"]
@@ -502,7 +502,7 @@ def main():
     w(f"> 候选: {CANDIDATE_NAME}\n")
     w(f"> 配置: risk={TARGET_RISK_PCT*100:.1f}% / max_leverage={MAX_LEVERAGE:.0f}x\n")
     w(f"> 止损距离过滤: {MIN_STOP_DISTANCE_PCT*100:.1f}% ~ {MAX_STOP_DISTANCE_PCT*100:.1f}%\n")
-    w(f"> 成本: fee=${FIXED_FEE_PER_TRADE:.0f}, slippage=${SLIPPAGE_PER_SIDE:.0f}\n")
+    w(f"> 成本: fee_rate={FEE_RATE:.1%}, slippage={SLIPPAGE_PER_SIDE:.2%} per side\n")
     w("\n---\n")
 
     # 1. Full results

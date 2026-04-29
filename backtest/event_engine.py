@@ -411,6 +411,7 @@ def run_backtest_with_position_sizing_and_costs(
     fee_rate = float(cost_cfg.get("fee_rate", 0.0))
     fixed_fee_per_trade = float(cost_cfg.get("fixed_fee_per_trade", 0.0))
     slippage = float(cost_cfg.get("slippage_per_side", 0.0))
+    slippage_is_rate = bool(cost_cfg.get("slippage_is_rate", False))
 
     metrics_cfg = risk_cost_config.get("metrics", {})
     timeframe_minutes = int(metrics_cfg.get("timeframe_minutes", 5))
@@ -451,7 +452,8 @@ def run_backtest_with_position_sizing_and_costs(
                     "position_mode": position_mode,
                 }
             else:
-                entry_filled = apply_slippage(entry_price_raw, side, "entry", slippage)
+                entry_slippage = entry_price_raw * slippage if slippage_is_rate else slippage
+                entry_filled = apply_slippage(entry_price_raw, side, "entry", entry_slippage)
                 return {
                     "entry_time": idx,
                     "side": side,
@@ -475,16 +477,18 @@ def run_backtest_with_position_sizing_and_costs(
         return None, None
 
     def finalize_exit(trade, idx, exit_price_raw, exit_reason, cash):
+        exit_slippage = exit_price_raw * slippage if slippage_is_rate else slippage
         _finalize_trade_ps(
             trade, idx, exit_price_raw, exit_reason,
-            slippage, fee_rate, fixed_fee_per_trade,
+            exit_slippage, fee_rate, fixed_fee_per_trade,
         )
         return trade["equity_after"]
 
     def finalize_eod(trade, last_idx, last_close, cash):
+        exit_slippage = last_close * slippage if slippage_is_rate else slippage
         _finalize_trade_ps(
             trade, last_idx, last_close, "end_of_data",
-            slippage, fee_rate, fixed_fee_per_trade,
+            exit_slippage, fee_rate, fixed_fee_per_trade,
         )
         return trade["equity_after"]
 

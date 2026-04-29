@@ -59,8 +59,9 @@ MAX_POSITION_VALUE_PCT = 1.0
 MIN_STOP_DISTANCE_PCT = 0.001  # 0.1%
 
 # Cost
-FIXED_FEE_PER_TRADE = 5.0
-SLIPPAGE_PER_SIDE = 5.0
+FIXED_FEE_PER_TRADE = 0.0
+SLIPPAGE_PER_SIDE = 0.0005  # 0.05% of notional
+FEE_RATE = 0.001            # 0.1%
 
 MIN_QTY = 0.0001
 QTY_STEP = 0.0001
@@ -155,9 +156,10 @@ def main():
             "qty_step": QTY_STEP,
         },
         "cost": {
+            "fee_rate": FEE_RATE,
             "fixed_fee_per_trade": FIXED_FEE_PER_TRADE,
             "slippage_per_side": SLIPPAGE_PER_SIDE,
-            "fee_rate": 0.0,
+            "slippage_is_rate": True,
         },
         "position_modes": {
             POSITION_MODE: {

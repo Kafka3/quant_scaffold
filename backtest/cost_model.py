@@ -3,13 +3,26 @@
 from typing import Dict
 
 
-def apply_slippage(price: float, side: str, action: str, slippage: float) -> float:
+def apply_slippage(price: float, side: str, action: str, slippage: float, is_rate: bool = False) -> float:
     """
     Apply slippage to a price.
 
-    side: 'long' or 'short'
-    action: 'entry' or 'exit'
+    Parameters
+    ----------
+    price : float
+        Raw price before slippage.
+    side : str
+        'long' or 'short'.
+    action : str
+        'entry' or 'exit'.
+    slippage : float
+        Absolute slippage amount (in price units) or rate (fraction of price).
+    is_rate : bool
+        When True, `slippage` is treated as a rate and multiplied by `price`.
     """
+    if is_rate:
+        slippage = price * slippage
+
     if side == "long":
         if action == "entry":
             return price + slippage
