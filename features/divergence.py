@@ -39,7 +39,7 @@ class DivergenceResult:
 def _pivot_high(series: pd.Series, left: int, right: int, strict: bool = True) -> pd.Series:
     if strict:
         rolled_left = series.rolling(window=left, min_periods=left).max().shift(1)
-        rolled_right = series[::-1].rolling(window=right, min_periods=right).max()[::-1].shift(-right)
+        rolled_right = series[::-1].rolling(window=right, min_periods=right).max()[::-1].shift(-1)
         result = (series > rolled_left) & (series > rolled_right)
     else:
         rolled = series.rolling(window=left + right + 1, min_periods=left + right + 1, center=True).max()
@@ -50,7 +50,7 @@ def _pivot_high(series: pd.Series, left: int, right: int, strict: bool = True) -
 def _pivot_low(series: pd.Series, left: int, right: int, strict: bool = True) -> pd.Series:
     if strict:
         rolled_left = series.rolling(window=left, min_periods=left).min().shift(1)
-        rolled_right = series[::-1].rolling(window=right, min_periods=right).min()[::-1].shift(-right)
+        rolled_right = series[::-1].rolling(window=right, min_periods=right).min()[::-1].shift(-1)
         result = (series < rolled_left) & (series < rolled_right)
     else:
         rolled = series.rolling(window=left + right + 1, min_periods=left + right + 1, center=True).min()

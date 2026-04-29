@@ -222,23 +222,50 @@ def test_prior_trend_semantics_for_continuation():
     """
     prior_uptrend serves bullish continuation;
     prior_downtrend serves bearish continuation.
+
+    For active setups, prior_uptrend is checked at the pivot1 location
+    (where the divergence logic evaluates it), not at the current bar.
     """
     df = load_ohlcv_csv(Path("example_data/sample_ohlcv.csv"))
     cfg = _load_cfg()
-    bundle = build_signals(df, cfg["strategy"])
 
-    # If bullish setups exist, they must sit in a region where prior_uptrend is True.
-    bullish_setups = bundle.features[bundle.features["bullish_setup_active"] == True]
-    for _, row in bullish_setups.iterrows():
-        assert row["prior_uptrend"] == 1, (
-            "bullish setup must be in a prior_uptrend region"
+    from features.indicators import stochastic_d
+    from features.divergence import detect_regular_divergence
+    from features.trend_filter import build_trend_filter
+
+    stoch_cfg = cfg["strategy"]["stochastic"]
+    osc = stochastic_d(
+        df,
+        k_period=stoch_cfg["k_period"],
+        d_period=stoch_cfg["d_period"],
+        smooth=stoch_cfg["smooth"],
+    )
+    trend = build_trend_filter(df, cfg["strategy"]["trend"])
+    div = detect_regular_divergence(df, osc, cfg["strategy"], trend)
+
+    from strategy.signal_builder import build_signals as _build_signals
+    bundle = _build_signals(df, cfg["strategy"])
+
+    # If bullish setups exist, their pivot1 must be in a prior_uptrend region.
+    signal = bundle.features[bundle.features["bullish_setup_active"] == True]
+    for idx in signal.index:
+        p1_idx = div.bullish_pivot1_idx.loc[idx]
+        assert pd.notna(p1_idx), (
+            f"bullish setup at {idx} must have a valid pivot1_idx"
+        )
+        assert trend["prior_uptrend"].loc[p1_idx] == True, (
+            f"bullish setup at {idx}: prior_uptrend at pivot1 {p1_idx} must be True"
         )
 
-    # If bearish setups exist, they must sit in a region where prior_downtrend is True.
-    bearish_setups = bundle.features[bundle.features["bearish_setup_active"] == True]
-    for _, row in bearish_setups.iterrows():
-        assert row["prior_downtrend"] == 1, (
-            "bearish setup must be in a prior_downtrend region"
+    # If bearish setups exist, their pivot1 must be in a prior_downtrend region.
+    signal = bundle.features[bundle.features["bearish_setup_active"] == True]
+    for idx in signal.index:
+        p1_idx = div.bearish_pivot1_idx.loc[idx]
+        assert pd.notna(p1_idx), (
+            f"bearish setup at {idx} must have a valid pivot1_idx"
+        )
+        assert trend["prior_downtrend"].loc[p1_idx] == True, (
+            f"bearish setup at {idx}: prior_downtrend at pivot1 {p1_idx} must be True"
         )
 
 
