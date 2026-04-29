@@ -73,7 +73,7 @@ MAX_STOP_DISTANCE_PCT = 0.02   # 2.0%
 # Cost
 FIXED_FEE_PER_TRADE = 0.0
 SLIPPAGE_PER_SIDE = 0.0005   # 0.05% of notional
-FEE_RATE = 0.002             # 0.1%
+FEE_RATE = 0.0002             # 0.1%
 
 MIN_QTY = 0.0001
 QTY_STEP = 0.0001

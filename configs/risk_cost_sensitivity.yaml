@@ -38,7 +38,7 @@ risk:
 
 cost:
   fee_mode: notional_rate
-  fee_rate: 0.002
+  fee_rate: 0.0002
   fixed_fee_per_trade: 0.0
 
   slippage_mode: fixed_price
